@@ -1,0 +1,8 @@
+-- Migration 006: 历史数据库结构契约纠偏
+--
+-- 该迁移必须由 database.migrations._repair_schema_contract_v6 执行。
+-- SQLite 不支持 ALTER TABLE ADD COLUMN IF NOT EXISTS；把每个列补齐操作放到
+-- 结构化 Python 迁移中，才能确保遇到已有列时不会跳过同批余下操作，并可由
+-- SAVEPOINT 在任一验证失败时完整回滚。
+--
+-- 这里保留版本化 SQL 文件，以便打包资源、升级审计和迁移清单完整可追溯。

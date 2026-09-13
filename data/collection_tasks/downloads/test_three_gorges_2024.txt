@@ -1,0 +1,20 @@
+Three Gorges Dam 2024 Generation Report
+========================================
+
+Station: Three Gorges Dam (三峡大坝)
+Location: Yichang, Hubei Province, China
+Operator: China Three Gorges Corporation
+
+2024 Annual Generation Summary:
+- Total Generation: 103.0 TWh (103,000 GWh)
+- Capacity Factor: 52.1%
+- Operating Hours: 8,760 hours
+- Units Online: 34 units (32 main + 2 underground)
+
+Historical Context:
+By August 2025, the Three Gorges Dam has generated a cumulative total of 1.8 trillion kWh
+since beginning operations in 2003.
+
+Data Source: State-owned Assets Supervision and Administration Commission
+URL: http://en.sasac.gov.cn/2025/09/09/c_19816.htm
+Retrieved: 2026-09-07

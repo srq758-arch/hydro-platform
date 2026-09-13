@@ -1,0 +1,32 @@
+# ---- Python 虚拟环境 ----
+.venv/
+venv/
+env/
+
+# ---- 构建产物 ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# ---- 测试与缓存 ----
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ---- 日志 ----
+*.log
+
+# ---- 编辑器 / 工具 ----
+.vscode/
+.idea/
+.claude/
+
+# ---- 操作系统 ----
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# 注意：data/ 目录有意不在此处排除。
+# data/seed/ 与 data/raw/ 随仓库一起分发，见 README.md 的数据来源与署名章节。

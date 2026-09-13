@@ -1,0 +1,3 @@
+-- v7 由 migrations.py 的结构化迁移执行。
+-- SQLite 不支持 DROP NOT NULL；必须重建 extraction_candidates，不能用普通 SQL
+-- 文件保留版本审计锚点，实际逻辑负责保留数据、恢复索引并执行 foreign_key_check。

@@ -1,0 +1,6 @@
+entity_id,canonical_name,country,capacity_mw,data_source_type,source_url,data_year,generation_gwh,notes
+GEM-G100000601208,Three Gorges Dam,China,22500,Official Government,http://en.sasac.gov.cn/2025/09/09/c_19816.htm,2024,103000,Cumulative 1.8 trillion kWh by Aug 2025
+GEM-G100000600596,Baihetan,China,16000,Official Government,http://en.sasac.gov.cn/2023/10/17/c_16059.htm,2023,62440,Design capacity 62.44 TWh/year
+GEM-G100000604112,Itaipu,Brazil/Paraguay,14000,Official Company,https://www.itaipu.gov.py/noticias/energia/itaipu-suministro-25-768-gwh-de-energia-electrica-a-paraguay-en-el-2025,2025,72879,2025 data available
+USA_ALL,All US Hydropower Plants,United States,ALL,EIA Official Data,https://www.eia.gov/electricity/data/detail-data.php,2003-2024,BULK,EIA-923 survey data - plant level
+USA_ALL_ALT,All US Hydropower Plants,United States,ALL,ORNL Dataset,https://hydrosource.ornl.gov/data/datasets/eha-net-generation-plant-database-2003-2024/,2003-2024,BULK,Geospatial dataset with generation data

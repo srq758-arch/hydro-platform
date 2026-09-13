@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>复核界面 - Hydro Platform</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Microsoft YaHei', 'Segoe UI', Arial, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            font-weight: normal;
+        }
+
+        .header button {
+            background: rgba(255,255,255,0.2);
+            border: 1px solid rgba(255,255,255,0.3);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .header button:hover {
+            background: rgba(255,255,255,0.3);
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .section {
+            margin-bottom: 30px;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: 150px 1fr;
+            gap: 12px;
+            background: #f9f9f9;
+            padding: 20px;
+            border-radius: 6px;
+        }
+
+        .info-label {
+            font-weight: bold;
+            color: #666;
+        }
+
+        .info-value {
+            color: #333;
+        }
+
+        .candidate-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .issues-container {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .issue {
+            padding: 15px;
+            border-radius: 6px;
+            border-left: 4px solid;
+        }
+
+        .issue.high {
+            background: #fff5f5;
+            border-color: #e53e3e;
+            color: #742a2a;
+        }
+
+        .issue.medium {
+            background: #fffaf0;
+            border-color: #ed8936;
+            color: #7c2d12;
+        }
+
+        .issue.low {
+            background: #f0f9ff;
+            border-color: #3182ce;
+            color: #1e4e8c;
+        }
+
+        .issue-severity {
+            font-weight: bold;
+            margin-right: 8px;
+        }
+
+        .evidence-card {
+            background: #f9f9f9;
+            padding: 20px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            border: 1px solid #e0e0e0;
+        }
+
+        .evidence-card .label {
+            font-weight: bold;
+            color: #666;
+            margin-right: 8px;
+        }
+
+        .evidence-card .value {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .evidence-text {
+            background: white;
+            padding: 15px;
+            border-radius: 4px;
+            border-left: 3px solid #667eea;
+            font-style: italic;
+            margin: 10px 0;
+        }
+
+        .evidence-link {
+            color: #667eea;
+            text-decoration: none;
+            font-size: 14px;
+        }
+
+        .evidence-link:hover {
+            text-decoration: underline;
+        }
+
+        .decision-section {
+            background: #f9f9f9;
+            padding: 25px;
+            border-radius: 6px;
+            margin-top: 30px;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .btn {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+
+        .btn-approve {
+            background: #48bb78;
+            color: white;
+        }
+
+        .btn-approve:hover {
+            background: #38a169;
+        }
+
+        .btn-reject {
+            background: #f56565;
+            color: white;
+        }
+
+        .btn-reject:hover {
+            background: #e53e3e;
+        }
+
+        .btn-cancel {
+            background: #e2e8f0;
+            color: #4a5568;
+        }
+
+        .btn-cancel:hover {
+            background: #cbd5e0;
+        }
+
+        .reject-reason {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #cbd5e0;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+            margin-top: 15px;
+            resize: vertical;
+        }
+
+        .reject-reason:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 50px;
+            color: #666;
+        }
+
+        .error {
+            background: #fff5f5;
+            color: #c53030;
+            padding: 20px;
+            border-radius: 6px;
+            border-left: 4px solid #e53e3e;
+            margin: 20px 0;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .badge-open {
+            background: #bee3f8;
+            color: #2c5282;
+        }
+
+        .badge-approved {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .badge-rejected {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+
+        .shortcut-hint {
+            font-size: 12px;
+            color: #999;
+            margin-left: 8px;
+        }
+
+        .no-data {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+            font-style: italic;
+        }
+
+        /* 快捷键指南 */
+        .shortcuts-guide {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            font-size: 12px;
+            display: none;
+        }
+
+        .shortcuts-guide.visible {
+            display: block;
+        }
+
+        .shortcuts-guide .shortcut-item {
+            margin: 5px 0;
+        }
+
+        .shortcuts-guide kbd {
+            background: rgba(255,255,255,0.2);
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin-right: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>复核界面</h1>
+            <div>
+                <button onclick="toggleShortcuts()">快捷键 (?)</button>
+                <button onclick="backToList()">返回列表</button>
+            </div>
+        </div>
+
+        <div class="content" id="content">
+            <div class="loading">加载中...</div>
+        </div>
+    </div>
+
+    <!-- 快捷键指南 -->
+    <div class="shortcuts-guide" id="shortcutsGuide">
+        <div style="font-weight: bold; margin-bottom: 10px;">快捷键</div>
+        <div class="shortcut-item"><kbd>A</kbd> 批准 (Approve)</div>
+        <div class="shortcut-item"><kbd>R</kbd> 驳回 (Reject)</div>
+        <div class="shortcut-item"><kbd>Esc</kbd> 返回列表</div>
+        <div class="shortcut-item"><kbd>?</kbd> 显示/隐藏此指南</div>
+    </div>
+
+    <script>
+        let currentReviewId = null;
+
+        // 页面加载时获取复核项ID
+        window.addEventListener('DOMContentLoaded', async () => {
+            // 从URL参数获取record_id
+            const urlParams = new URLSearchParams(window.location.search);
+            const recordId = urlParams.get('record_id');
+
+            if (recordId) {
+                await loadReviewItem(recordId);
+            } else {
+                showError('缺少复核项ID');
+            }
+        });
+
+        // 加载复核项详情
+        async function loadReviewItem(recordId) {
+            try {
+                const data = await pywebview.api.get_review_detail(recordId);
+
+                if (!data) {
+                    showError('复核项不存在');
+                    return;
+                }
+
+                currentReviewId = recordId;
+                renderReviewItem(data);
+            } catch (error) {
+                showError('加载失败: ' + error.message);
+            }
+        }
+
+        // 渲染复核项详情
+        function renderReviewItem(data) {
+            const content = document.getElementById('content');
+
+            const html = `
+                <!-- 基本信息 -->
+                <div class="section">
+                    <div class="section-title">基本信息</div>
+                    <div class="info-grid">
+                        <div class="info-label">记录ID:</div>
+                        <div class="info-value">${data.id}</div>
+
+                        <div class="info-label">电站:</div>
+                        <div class="info-value">${data.canonical_name || 'N/A'} (${data.entity_id})</div>
+
+                        <div class="info-label">国家:</div>
+                        <div class="info-value">${data.country || 'N/A'}</div>
+
+                        <div class="info-label">年份:</div>
+                        <div class="info-value">${data.period_label}</div>
+
+                        <div class="info-label">发电量:</div>
+                        <div class="info-value candidate-value">${data.generation_gwh} GWh</div>
+
+                        <div class="info-label">原始值:</div>
+                        <div class="info-value">${data.value_raw} ${data.unit_raw}</div>
+
+                        <div class="info-label">置信度:</div>
+                        <div class="info-value">${data.confidence || 'N/A'}</div>
+
+                        <div class="info-label">值类型:</div>
+                        <div class="info-value">${data.value_type || 'actual'}</div>
+                    </div>
+                </div>
+
+                <!-- 校验问题 -->
+                <div class="section">
+                    <div class="section-title">校验问题</div>
+                    <div class="issues-container" id="issues">
+                        ${renderValidationIssues(data.validation_issues)}
+                    </div>
+                </div>
+
+                <!-- 证据 -->
+                <div class="section">
+                    <div class="section-title">证据</div>
+                    <div id="evidences">
+                        ${renderEvidences(data.evidences)}
+                    </div>
+                </div>
+
+                <!-- 决策区域 -->
+                <div class="decision-section">
+                    <div class="section-title">复核决策</div>
+                    <p style="color: #666; margin-bottom: 15px;">
+                        请审核上述信息，确认候选值的准确性。
+                    </p>
+
+                    <label for="rejectReason" style="display: block; margin-bottom: 8px; color: #666;">
+                        驳回理由（可选）:
+                    </label>
+                    <textarea
+                        id="rejectReason"
+                        class="reject-reason"
+                        rows="3"
+                        placeholder="如果驳回，请说明理由..."
+                    ></textarea>
+
+                    <div class="button-group">
+                        <button class="btn btn-approve" onclick="approveReview()">
+                            ✓ 批准 <span class="shortcut-hint">(A)</span>
+                        </button>
+                        <button class="btn btn-reject" onclick="rejectReview()">
+                            ✗ 驳回 <span class="shortcut-hint">(R)</span>
+                        </button>
+                        <button class="btn btn-cancel" onclick="backToList()">
+                            返回 <span class="shortcut-hint">(Esc)</span>
+                        </button>
+                    </div>
+                </div>
+            `;
+
+            content.innerHTML = html;
+        }
+
+        // 渲染校验问题
+        function renderValidationIssues(issues) {
+            if (!issues || issues.length === 0) {
+                return '<div class="no-data">无校验问题</div>';
+            }
+
+            return issues.map(issue => {
+                const severity = issue.severity || 'low';
+                const icon = severity === 'high' ? '🔴' : severity === 'medium' ? '⚠️' : 'ℹ️';
+
+                return `
+                    <div class="issue ${severity}">
+                        <span class="issue-severity">${icon} ${severity.toUpperCase()}</span>
+                        ${issue.message}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // 渲染证据
+        function renderEvidences(evidences) {
+            if (!evidences || evidences.length === 0) {
+                return '<div class="no-data">无证据信息</div>';
+            }
+
+            return evidences.map(ev => `
+                <div class="evidence-card">
+                    <div class="value">
+                        <span class="label">来源:</span>
+                        <a href="${ev.source_url || '#'}" class="evidence-link" target="_blank">
+                            ${ev.source_url || 'N/A'}
+                        </a>
+                    </div>
+                    <div class="value">
+                        <span class="label">文档ID:</span>
+                        ${ev.document_id || 'N/A'}
+                    </div>
+                    ${ev.evidence_text ? `
+                        <div class="evidence-text">
+                            "${ev.evidence_text}"
+                        </div>
+                    ` : ''}
+                    ${ev.evidence_location ? `
+                        <div class="value">
+                            <span class="label">位置:</span>
+                            ${ev.evidence_location}
+                        </div>
+                    ` : ''}
+                </div>
+            `).join('');
+        }
+
+        // 批准复核
+        async function approveReview() {
+            if (!currentReviewId) return;
+
+            if (!confirm('确认批准此复核项？')) return;
+
+            try {
+                const result = await pywebview.api.approve_record(currentReviewId);
+
+                if (result.status === 'success') {
+                    alert('复核已批准！');
+                    backToList();
+                } else {
+                    alert('批准失败: ' + result.message);
+                }
+            } catch (error) {
+                alert('操作失败: ' + error.message);
+            }
+        }
+
+        // 驳回复核
+        async function rejectReview() {
+            if (!currentReviewId) return;
+
+            const reason = document.getElementById('rejectReason').value.trim();
+
+            if (!reason) {
+                alert('请填写驳回理由');
+                return;
+            }
+
+            if (!confirm('确认驳回此复核项？')) return;
+
+            try {
+                const result = await pywebview.api.reject_record(currentReviewId, reason);
+
+                if (result.status === 'success') {
+                    alert('复核已驳回！');
+                    backToList();
+                } else {
+                    alert('驳回失败: ' + result.message);
+                }
+            } catch (error) {
+                alert('操作失败: ' + error.message);
+            }
+        }
+
+        // 返回列表
+        function backToList() {
+            // 关闭当前窗口或导航回主界面
+            window.close();
+        }
+
+        // 显示错误
+        function showError(message) {
+            const content = document.getElementById('content');
+            content.innerHTML = `
+                <div class="error">
+                    <strong>错误:</strong> ${message}
+                </div>
+            `;
+        }
+
+        // 切换快捷键指南
+        function toggleShortcuts() {
+            const guide = document.getElementById('shortcutsGuide');
+            guide.classList.toggle('visible');
+        }
+
+        // 键盘快捷键
+        document.addEventListener('keydown', (e) => {
+            // 忽略在输入框中的按键
+            if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') {
+                return;
+            }
+
+            switch(e.key.toLowerCase()) {
+                case 'a':
+                    e.preventDefault();
+                    approveReview();
+                    break;
+                case 'r':
+                    e.preventDefault();
+                    document.getElementById('rejectReason').focus();
+                    break;
+                case 'escape':
+                    e.preventDefault();
+                    backToList();
+                    break;
+                case '?':
+                    e.preventDefault();
+                    toggleShortcuts();
+                    break;
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>全球水电数据平台 — 专业的水电站发电量数据管理系统</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Navigation -->
+  <nav class="nav">
+    <div class="container nav-inner">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" width="28" height="28">
+          <path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4" stroke="currentColor" stroke-width="2" fill="none"/>
+        </svg>
+        <span>全球水电数据平台</span>
+      </div>
+      <div class="nav-links">
+        <a href="#features">功能</a>
+        <a href="#workflow">工作流</a>
+        <a href="#stats">数据覆盖</a>
+        <a href="#download">下载</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero Section -->
+  <section class="hero">
+    <div class="container hero-inner">
+      <div class="hero-content">
+        <div class="badge">采集 → 归档 → 解析 → 抽取 → 复核 → 发布</div>
+        <h1>专业的水电站<br>发电量数据管理系统</h1>
+        <p class="hero-desc">从数据采集到质量管控的完整工作流程，智能处理 PDF/Excel 文档，自动识别发电量数据，支持全球 7,000+ 水电站数据追踪</p>
+        <div class="hero-actions">
+          <a href="#download" class="btn btn-primary">
+            <svg viewBox="0 0 24 24" width="20" height="20">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" stroke-width="2" fill="none"/>
+            </svg>
+            下载桌面应用
+          </a>
+          <a href="#features" class="btn btn-outline">查看功能</a>
+        </div>
+        <div class="hero-stats">
+          <div class="stat-item">
+            <div class="stat-value">4,965</div>
+            <div class="stat-label">座水电站</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value">2,058</div>
+            <div class="stat-label">个项目</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value">100%</div>
+            <div class="stat-label">自动化处理</div>
+          </div>
+        </div>
+      </div>
+      <div class="hero-visual">
+        <div class="app-frame">
+          <div class="frame-header">
+            <div class="frame-dots">
+              <span></span><span></span><span></span>
+            </div>
+            <div class="frame-title">水电站数据管理</div>
+          </div>
+          <div class="frame-content">
+            <div class="frame-sidebar">
+              <div class="sidebar-item active">工作台</div>
+              <div class="sidebar-item">水电站</div>
+              <div class="sidebar-item">数据缺口</div>
+              <div class="sidebar-item">复核中心</div>
+              <div class="sidebar-item">Top 100</div>
+            </div>
+            <div class="frame-main">
+              <div class="kpi-grid">
+                <div class="kpi-card">
+                  <div class="kpi-icon blue"></div>
+                  <div class="kpi-num">4,965</div>
+                  <div class="kpi-lab">水电站总数</div>
+                </div>
+                <div class="kpi-card">
+                  <div class="kpi-icon green"></div>
+                  <div class="kpi-num">1,234</div>
+                  <div class="kpi-lab">已确认记录</div>
+                </div>
+                <div class="kpi-card">
+                  <div class="kpi-icon orange"></div>
+                  <div class="kpi-num">45</div>
+                  <div class="kpi-lab">待复核</div>
+                </div>
+              </div>
+              <div class="chart-placeholder"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features Section -->
+  <section id="features" class="features">
+    <div class="container">
+      <h2 class="section-title">核心功能</h2>
+      <p class="section-subtitle">从数据采集到发布的完整工作流程</p>
+
+      <div class="feature-grid">
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" stroke="currentColor" stroke-width="2" fill="none"/>
+            </svg>
+          </div>
+          <h3>智能数据采集</h3>
+          <p>自动下载文档或上传本地文件，支持 PDF、Excel 格式，批量处理多个数据源</p>
+          <div class="feature-tags">
+            <span>URL 下载</span>
+            <span>本地上传</span>
+            <span>批量处理</span>
+          </div>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" stroke-width="2" fill="none"/>
+              <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" stroke="currentColor" stroke-width="2" fill="none"/>
+            </svg>
+          </div>
+          <h3>文档解析引擎</h3>
+          <p>自动解析 PDF 表格和文本，提取结构化数据，支持多语言文档处理</p>
+          <div class="feature-tags">
+            <span>表格识别</span>
+            <span>文本抽取</span>
+            <span>多语言</span>
+          </div>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24">
+              <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2" fill="none"/>
+              <path d="M12 1v6M12 17v6M4.22 4.22l4.24 4.24M15.54 15.54l4.24 4.24M1 12h6M17 12h6M4.22 19.78l4.24-4.24M15.54 8.46l4.24-4.24" stroke="currentColor" stroke-width="2" fill="none"/>
+            </svg>
+          </div>
+          <h3>规则+LLM 双引擎抽取</h3>
+          <p>规则引擎快速识别标准格式，LLM 处理复杂文档，自动标注置信度</p>
+          <div class="feature-tags">
+            <span>规则引擎</span>
+            <span>LLM 增强</span>
+            <span>置信度评分</span>
+          </div>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24">
+              <path d="M9 11l3 3L22 4" stroke="currentColor" stroke-width="2" fill="none"/>
+              <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" stroke="currentColor" stroke-width="2" fill="none"/>
+            </svg>
+          </div>
+          <h3>人工复核机制</h3>
+          <p>低置信度数据进入复核队列，显示原文片段和证据链，支持批量操作</p>
+          <div class="feature-tags">
+            <span>证据追溯</span>
+            <span>批量审核</span>
+            <span>质量管控</span>
+          </div>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24">
+              <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" stroke="currentColor" stroke-width="2" fill="none"/>
+              <path d="M12 9v4M12 17h.01" stroke="currentColor" stroke-width="2" fill="none"/>
+            </svg>
+          </div>
+          <h3>智能缺口检测</h3>
+          <p>自动发现高优先级电站的数据缺口，按年份和容量排序，生成采集建议</p>
+          <div class="feature-tags">
+            <span>自动检测</span>
+            <span>优先级排序</span>
+            <span>采集计划</span>
+          </div>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24">
+              <path d="M3 3v18h18" stroke="currentColor" stroke-width="2" fill="none"/>
+              <path d="M18 17V9M13 17v-5M8 17v-3" stroke="currentColor" stroke-width="2" fill="none"/>
+            </svg>
+          </div>
+          <h3>多维度统计分析</h3>
+          <p>按国家、年份、电站类型统计，ECharts 可视化展示，支持数据导出</p>
+          <div class="feature-tags">
+            <span>多维统计</span>
+            <span>图表展示</span>
+            <span>数据导出</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Workflow Section -->
+  <section id="workflow" class="workflow">
+    <div class="container">
+      <h2 class="section-title">数据处理流程</h2>
+      <p class="section-subtitle">自动化 + 人工审核的混合工作流</p>
+
+      <div class="workflow-steps">
+        <div class="workflow-step">
+          <div class="step-num">01</div>
+          <div class="step-icon">📥</div>
+          <h3>采集</h3>
+          <p>下载 URL 或上传本地文件<br>自动归档原始文档</p>
+        </div>
+        <div class="workflow-arrow">→</div>
+
+        <div class="workflow-step">
+          <div class="step-num">02</div>
+          <div class="step-icon">📄</div>
+          <h3>解析</h3>
+          <p>PDF/Excel 转结构化数据<br>提取表格和文本内容</p>
+        </div>
+        <div class="workflow-arrow">→</div>
+
+        <div class="workflow-step">
+          <div class="step-num">03</div>
+          <div class="step-icon">🔍</div>
+          <h3>抽取</h3>
+          <p>规则引擎+LLM 识别数据<br>自动标注置信度</p>
+        </div>
+        <div class="workflow-arrow">→</div>
+
+        <div class="workflow-step">
+          <div class="step-num">04</div>
+          <div class="step-icon">✅</div>
+          <h3>复核</h3>
+          <p>低置信度数据人工审核<br>显示证据链和原文</p>
+        </div>
+        <div class="workflow-arrow">→</div>
+
+        <div class="workflow-step">
+          <div class="step-num">05</div>
+          <div class="step-icon">📊</div>
+          <h3>发布</h3>
+          <p>高质量数据进入正式库<br>参与统计和榜单</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Stats Section -->
+  <section id="stats" class="stats-section">
+    <div class="container">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-icon blue">
+            <svg viewBox="0 0 24 24" width="32" height="32">
+              <path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4" stroke="currentColor" stroke-width="2" fill="none"/>
+            </svg>
+          </div>
+          <div class="stat-big">4,965</div>
+          <div class="stat-label">全球水电站</div>
+          <div class="stat-detail">覆盖 150+ 国家和地区</div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon green">
+            <svg viewBox="0 0 24 24" width="32" height="32">
+              <path d="M9 2h6a1 1 0 0 1 1 1v1h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2V3a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="2" fill="none"/>
+              <path d="M9 12h6M9 16h6" stroke="currentColor" stroke-width="2" fill="none"/>
+            </svg>
+          </div>
+          <div class="stat-big">2,058</div>
+          <div class="stat-label">在建/规划项目</div>
+          <div class="stat-detail">跟踪项目进展和投运计划</div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon orange">
+            <svg viewBox="0 0 24 24" width="32" height="32">
+              <ellipse cx="12" cy="5" rx="9" ry="3" stroke="currentColor" stroke-width="2" fill="none"/>
+              <path d="M3 5v14a9 3 0 0 0 18 0V5M3 12a9 3 0 0 0 18 0" stroke="currentColor" stroke-width="2" fill="none"/>
+            </svg>
+          </div>
+          <div class="stat-big">10,000+</div>
+          <div class="stat-label">发电量记录</div>
+          <div class="stat-detail">历年数据持续更新</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Download Section -->
+  <section id="download" class="download-section">
+    <div class="container">
+      <div class="download-card">
+        <div class="download-content">
+          <h2>开始使用全球水电数据平台</h2>
+          <p>Windows 桌面应用 · 离线运行 · 本地数据库</p>
+          <div class="download-actions">
+            <button class="btn btn-primary btn-large">
+              <svg viewBox="0 0 24 24" width="20" height="20">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" stroke-width="2" fill="none"/>
+              </svg>
+              下载 Windows 版本
+            </button>
+            <div class="download-info">
+              <div class="info-item">
+                <strong>版本</strong>
+                <span>v1.0</span>
+              </div>
+              <div class="info-item">
+                <strong>大小</strong>
+                <span>~500 MB</span>
+              </div>
+              <div class="info-item">
+                <strong>系统</strong>
+                <span>Win 10/11</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="download-visual">
+          <div class="tech-stack">
+            <div class="tech-item">Python</div>
+            <div class="tech-item">SQLite</div>
+            <div class="tech-item">pywebview</div>
+            <div class="tech-item">ECharts</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container footer-inner">
+      <div class="footer-brand">
+        <div class="logo">
+          <svg viewBox="0 0 24 24" width="24" height="24">
+            <path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4" stroke="currentColor" stroke-width="2" fill="none"/>
+          </svg>
+          <span>全球水电数据平台</span>
+        </div>
+        <p>专业的水电站发电量数据管理系统</p>
+      </div>
+      <div class="footer-links">
+        <div class="footer-col">
+          <h4>功能</h4>
+          <a href="#features">数据采集</a>
+          <a href="#features">智能抽取</a>
+          <a href="#features">质量管控</a>
+          <a href="#features">统计分析</a>
+        </div>
+        <div class="footer-col">
+          <h4>资源</h4>
+          <a href="#">用户手册</a>
+          <a href="#">API 文档</a>
+          <a href="#">更新日志</a>
+        </div>
+        <div class="footer-col">
+          <h4>关于</h4>
+          <a href="#">项目背景</a>
+          <a href="#">技术架构</a>
+          <a href="#">开源协议</a>
+        </div>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <div class="container">
+        <p>© 2024 全球水电数据平台 · 采集 → 归档 → 解析 → 抽取 → 复核 → 发布</p>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

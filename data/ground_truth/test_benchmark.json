@@ -1,0 +1,52 @@
+{
+  "created_at": "2026-09-08T23:20:50.591503",
+  "total_cases": 3,
+  "annotated_cases": 0,
+  "test_cases": [
+    {
+      "case_id": "GEM-G100000600743_2024",
+      "entity_id": "GEM-G100000600743",
+      "station_name": "Fengtan hydroelectric plant",
+      "country": "China",
+      "capacity_mw": 860.0,
+      "year": 2024,
+      "metric": "generation",
+      "ground_truth": null,
+      "annotated": false,
+      "annotation_date": null,
+      "annotator": null,
+      "source_url": null,
+      "notes": ""
+    },
+    {
+      "case_id": "GEM-G100000600743_2023",
+      "entity_id": "GEM-G100000600743",
+      "station_name": "Fengtan hydroelectric plant",
+      "country": "China",
+      "capacity_mw": 860.0,
+      "year": 2023,
+      "metric": "generation",
+      "ground_truth": null,
+      "annotated": false,
+      "annotation_date": null,
+      "annotator": null,
+      "source_url": null,
+      "notes": ""
+    },
+    {
+      "case_id": "GEM-G100000600743_2022",
+      "entity_id": "GEM-G100000600743",
+      "station_name": "Fengtan hydroelectric plant",
+      "country": "China",
+      "capacity_mw": 860.0,
+      "year": 2022,
+      "metric": "generation",
+      "ground_truth": null,
+      "annotated": false,
+      "annotation_date": null,
+      "annotator": null,
+      "source_url": null,
+      "notes": ""
+    }
+  ]
+}

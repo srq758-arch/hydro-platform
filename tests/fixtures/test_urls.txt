@@ -1,0 +1,13 @@
+# 测试 URL 列表
+
+# 1. 404 错误测试
+https://example.com/nonexistent_report.pdf
+
+# 2. 403 权限错误测试
+https://www.eia.gov/restricted/access_denied.pdf
+
+# 3. 超时测试（慢速服务器）
+https://httpstat.us/200?sleep=60000
+
+# 4. 正常 PDF（如果需要真实测试，替换为有效链接）
+# https://www.eia.gov/electricity/monthly/pdf/epm.pdf

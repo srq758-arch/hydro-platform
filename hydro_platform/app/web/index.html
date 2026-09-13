@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>全球水电数据平台</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <!-- ============ 侧栏 ============ -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 20 4-9 4 5 4-8 4 6 4-4"/><path d="M2 20h20"/></svg>
+        </div>
+        <div>
+          <div class="title">全球水电数据平台</div>
+          <div class="subtitle">全球水电数据研究工作台</div>
+        </div>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-item active" data-route="dashboard">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg> 工作台</div>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-group-label">数据对象</div>
+        <div class="nav-item" data-route="stations">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M3 21h18"/><path d="M5 21V7l8-4v18"/><path d="M19 21V11l-6-4"/><path d="M9 9v.01M9 12v.01M9 15v.01M9 18v.01"/></svg> 水电站</div>
+        <div class="nav-item" data-route="projects">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M9 2h6a1 1 0 0 1 1 1v1h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2V3a1 1 0 0 1 1-1z"/><path d="M9 12h6M9 16h6"/></svg> 项目</div>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-group-label">数据工作</div>
+        <div class="nav-item" data-route="add-data">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> 新增数据</div>
+        <div class="nav-item" data-route="intelligent-tasks">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 7v5l3 2"/><path d="M18 3v4h-4"/></svg> 智能发现</div>
+        <div class="nav-item" data-route="data-gaps">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg> 数据缺口
+          <span class="badge" id="nav-gaps-badge" style="display:none"></span></div>
+        <div class="nav-item" data-route="tasks">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg> 采集任务
+          <span class="badge gray" id="nav-tasks-badge" style="display:none"></span></div>
+        <div class="nav-item" data-route="review">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> 复核中心
+          <span class="badge gray" id="nav-review-badge" style="display:none"></span></div>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-group-label">数据结果</div>
+        <div class="nav-item" data-route="browse">
+          <svg class="nav-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg> 数据浏览</div>
+        <div class="nav-item" data-route="top100">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0z"/></svg> Top 100</div>
+        <div class="nav-item" data-route="stats">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 16l4-4 3 3 5-6"/></svg> 统计分析</div>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-group-label">资料与证据</div>
+        <div class="nav-item" data-route="sources">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5"/></svg> 来源管理</div>
+        <div class="nav-item" data-route="documents">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg> 文档资料</div>
+        <div class="nav-item" data-route="evidence">
+          <svg class="nav-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg> 证据中心</div>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-group-label">系统</div>
+        <div class="nav-item" data-route="guide">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M8 7h8M8 11h8"/></svg> 使用指南</div>
+        <div class="nav-item" data-route="test-lab">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M9 3h6M10 3v5l-4.5 7.5A3 3 0 0 0 8.1 20h7.8a3 3 0 0 0 2.6-4.5L14 8V3"/><path d="M8 14h8"/></svg> 测试实验室</div>
+        <div class="nav-item" data-route="settings">
+          <svg class="nav-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> 设置</div>
+      </div>
+    </aside>
+
+    <!-- ============ 顶栏 ============ -->
+    <header class="topbar">
+      <div class="search-box">
+        <svg class="search-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input type="text" id="global-search" placeholder="搜索电站、项目、年份、数据、来源、文档..." oninput="handleGlobalSearch(event)">
+        <span class="search-clear" id="search-clear" style="display:none" onclick="clearSearch()" title="清空搜索">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </span>
+      </div>
+      <div class="topbar-right">
+        <span class="icon-btn" title="通知" onclick="toggleNotifications(event)">
+          <svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+        </span>
+        <span class="icon-btn" title="设置" onclick="navigate('settings')">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </span>
+        <div class="user" onclick="toggleUserMenu(event)"><span class="avatar">研</span> 研究员</div>
+      </div>
+    </header>
+
+    <!-- ============ 主内容 ============ -->
+    <main class="main" id="main-content">
+      <div class="spinner">加载中…</div>
+    </main>
+  </div>
+
+  <script src="vendor/echarts.min.js"></script>
+  <script src="app.js?v=20260912-07"></script>
+</body>
+</html>

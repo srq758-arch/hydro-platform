@@ -1,0 +1,2 @@
+-- v8 可信出口视图由 migrations.py 的结构化验证配合本文件执行。
+-- 视图定义必须同时校验 generation_records、candidate_evidence、evidence、documents。

@@ -1,0 +1,91 @@
+{
+  "generated_at": "2026-08-30",
+  "source": {
+    "dataset_version": "GEM Global Hydropower Tracker - March 2026 release",
+    "source_page": "https://globalenergymonitor.org/projects/global-hydropower-tracker",
+    "download_url": "https://zenodo.org/api/records/20843067/files/GEM_GHPT.xlsx/content",
+    "local_raw_file": "F:\\shui_dian_zhan project\\data\\seed\\gem_raw\\GEM_GHPT_2026-03.xlsx",
+    "license_note": "GEM data is distributed under CC BY 4.0; retain attribution when redistributing."
+  },
+  "input": {
+    "sheets": {
+      "Data": 6772,
+      "Below Threshold": 251
+    },
+    "raw_total_records": 7023
+  },
+  "output": {
+    "master_registry_records": 7023,
+    "station_seed_records": 4965,
+    "project_seed_records": 2058
+  },
+  "status_distribution": {
+    "operating": 4927,
+    "pre-construction": 639,
+    "announced": 536,
+    "construction": 362,
+    "shelved - inferred 2 y": 175,
+    "cancelled - inferred 4 y": 168,
+    "cancelled": 93,
+    "shelved": 85,
+    "mothballed": 25,
+    "retired": 13
+  },
+  "technology_distribution": {
+    "conventional storage": 3360,
+    "run-of-river": 1710,
+    "pumped storage": 1045,
+    "unknown": 768,
+    "conventional and run-of-river": 120,
+    "conventional and pumped storage": 20
+  },
+  "country_count": 149,
+  "country_distribution_top20": {
+    "China": 1435,
+    "India": 535,
+    "United States": 522,
+    "Nepal": 271,
+    "Norway": 251,
+    "Brazil": 233,
+    "Japan": 219,
+    "Canada": 218,
+    "Türkiye": 192,
+    "France": 162,
+    "Italy": 150,
+    "Spain": 136,
+    "Sweden": 126,
+    "Vietnam": 124,
+    "Switzerland": 110,
+    "Russia": 97,
+    "Austria": 97,
+    "Pakistan": 88,
+    "Laos": 84,
+    "Philippines": 79
+  },
+  "quality_checks": {
+    "duplicate_gem_location_id": 73,
+    "duplicate_gem_unit_id": 0,
+    "missing_name": 0,
+    "missing_capacity": 0,
+    "capacity_nonpositive": 0,
+    "capacity_below_zero": 0,
+    "invalid_latitude": 0,
+    "invalid_longitude": 0,
+    "complex_membership_rows": 417,
+    "needs_review_rows": 0
+  },
+  "priority_distribution": {
+    "A": 295,
+    "B": 592,
+    "C": 4040,
+    "D": 2096
+  },
+  "rules": [
+    "Data sheet is the primary >=30 MW universe in the March 2026 release.",
+    "Below Threshold sheet is retained as a supplement and is not discarded.",
+    "GEM unit ID is preferred for entity_id because one GEM location can contain multiple unit/project rows.",
+    "Operating, retired, and mothballed rows are station-like; future statuses are project rows.",
+    "Tier A/B/C apply to operating rows by capacity (>=1000 MW, 300-999.99 MW, <300 MW); all non-operating rows are Tier D.",
+    "Seed List is not an annual generation ranking; generation records will be collected separately."
+  ]
+}

@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hydro-platform"
+version = "0.1.0"
+description = "全球水电站数据采集与核验系统 V1（任务驱动、证据可追溯）"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.5",
+    "pandas>=2.0",
+    "PyYAML>=6.0",
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "cryptography>=41.0",
+    "keyring>=24.3",
+    "click>=8.1",
+    "pywebview>=4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+]
+# 解析层可选依赖：未安装时对应格式优雅降级（PDF/xlsx 解析不可用但不崩溃）。
+parsing = [
+    "pypdf>=4.0",
+    "openpyxl>=3.1",
+]
+# 浏览器访问可选依赖（步骤 6）：未安装时路由回退不可用。
+browser = [
+    "playwright>=1.40",
+]
+# GUI 依赖已列为核心依赖：项目的默认入口即桌面应用。
+
+[project.scripts]
+hydro-platform = "hydro_platform.app.main:main"
+
+[tool.setuptools.packages.find]
+include = ["hydro_platform*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit", "tests/integration", "tests/contract"]
+pythonpath = ["."]
+addopts = "-ra --strict-markers -m 'not network and not browser and not llm and not packaging'"
+norecursedirs = ["tests/manual", ".venv", "build", "dist"]
+filterwarnings = [
+    "error::pytest.PytestReturnNotNoneWarning",
+]
+markers = [
+    "network: 需要真实外网访问的用例；默认不跑，用 -m network 显式开启",
+    "browser: 需要真实 Edge/Chrome 自动化环境的用例",
+    "llm: 需要真实 LLM 服务或凭据的用例",
+    "packaging: 需要 wheel/EXE 构建或干净机环境的用例",
+]

@@ -1,0 +1,25 @@
+{
+  "deepseek": {
+    "name": "DeepSeek",
+    "description": "DeepSeek Chat API - 高性价比大模型",
+    "base_url": "https://api.deepseek.com",
+    "auth_type": "bearer",
+    "default_model": "deepseek-chat",
+    "models": {
+      "deepseek-chat": {
+        "max_tokens": 64000,
+        "supports_streaming": true,
+        "cost_per_1m_input": 0.14,
+        "cost_per_1m_output": 0.28,
+        "description": "通用对话模型"
+      },
+      "deepseek-coder": {
+        "max_tokens": 64000,
+        "supports_streaming": true,
+        "cost_per_1m_input": 0.14,
+        "cost_per_1m_output": 0.28,
+        "description": "代码生成模型"
+      }
+    }
+  }
+}
