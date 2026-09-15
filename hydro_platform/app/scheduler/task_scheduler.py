@@ -16,6 +16,7 @@ from ...common.logging_setup import get_logger
 from ...common.enums import TaskStatus
 from ...database.connection import connect
 from ...database.repositories import TaskRepository
+from ...intelligence.web_search import SearchRuntime
 
 logger = get_logger(__name__)
 
@@ -30,7 +31,8 @@ class TaskScheduler:
         max_workers: int = 2,
         scan_interval: int = 5,
         on_task_complete: Callable = None,
-        on_task_error: Callable = None
+        on_task_error: Callable = None,
+        search_runtime: SearchRuntime | None = None,
     ):
         """初始化调度器
 
@@ -41,6 +43,7 @@ class TaskScheduler:
             scan_interval: 扫描间隔（秒，默认5秒）
             on_task_complete: 任务完成回调
             on_task_error: 任务错误回调
+            search_runtime: 调度器生命周期内共享的搜索运行时；用于跨任务配额和成本统计
         """
         self.db_path = db_path
         self.task_executor = task_executor
@@ -48,6 +51,7 @@ class TaskScheduler:
         self.scan_interval = scan_interval
         self.on_task_complete = on_task_complete
         self.on_task_error = on_task_error
+        self.search_runtime = search_runtime or SearchRuntime()
 
         self.running = False
         self.paused = False

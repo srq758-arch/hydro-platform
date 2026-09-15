@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from typing import Iterable
 import re
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -27,10 +28,11 @@ class UrlProbe:
     @staticmethod
     def _html_preview(response: requests.Response, *, limit: int = 96 * 1024) -> str:
         """从可访问 HTML 响应提取受限预览，供相关性验证而非数据采集使用。"""
-        headers = getattr(response, "headers", {}) or {}
-        content_type = str(headers.get("Content-Type") or "").lower()
-        if "html" not in content_type:
-            return ""
+        return UrlProbe._inspect_html(response, limit=limit)[0]
+
+    @staticmethod
+    def _inspect_html(response: requests.Response, *, limit: int = 96 * 1024) -> tuple[str, list[dict[str, str]]]:
+        """一次读取受限 HTML，返回文字预览和最多 50 条公开链接。"""
         chunks: list[bytes] = []
         size = 0
         try:
@@ -43,23 +45,36 @@ class UrlProbe:
                 if size >= limit:
                     break
         except (AttributeError, requests.RequestException):
-            return ""
+            return "", []
         if not chunks:
-            return ""
+            return "", []
         raw = b"".join(chunks)
-        # requests 在未声明 charset 的中文页面上常默认 ISO-8859-1，会把 UTF-8
-        # 正文解成乱码。交给 BeautifulSoup 从字节和 meta 标签判断；只有明确的
-        # 非 Latin-1 编码才作为提示传入。
         declared = str(getattr(response, "encoding", "") or "")
         encoding = declared if declared and not re.match(r"^(?:iso-8859-1|latin-1)$", declared, re.I) else None
         soup = BeautifulSoup(raw, "html.parser", from_encoding=encoding)
+        links: list[dict[str, str]] = []
+        seen: set[str] = set()
+        base_url = str(getattr(response, "url", "") or "")
+        for anchor in soup.find_all("a", href=True):
+            url = urljoin(base_url, str(anchor.get("href") or "").strip())
+            if not url.startswith(("https://", "http://")) or url in seen:
+                continue
+            seen.add(url)
+            links.append({"url": url, "text": anchor.get_text(" ", strip=True)[:500]})
+            if len(links) >= 50:
+                break
         for tag in soup(["script", "style", "noscript"]):
             tag.decompose()
-        return soup.get_text(" ", strip=True)[:12000]
+        return soup.get_text(" ", strip=True)[:12000], links
 
     @staticmethod
     def _official_pdf_preview(response: requests.Response, *, limit: int = 2 * 1024 * 1024) -> str:
         """从小型官方公告 PDF 读取受限文本证据，不保存文件也不触发正式采集。"""
+        try:
+            from pypdf import PdfReader
+            from pypdf.errors import PyPdfError
+        except ImportError:
+            return ""
         chunks: list[bytes] = []
         size = 0
         try:
@@ -71,11 +86,10 @@ class UrlProbe:
                 size += min(len(chunk), remaining)
                 if size >= limit:
                     break
-            from pypdf import PdfReader
             reader = PdfReader(BytesIO(b"".join(chunks)))
             text = " ".join((page.extract_text() or "") for page in reader.pages[:12])
             return re.sub(r"\s+", " ", text).strip()[:16000]
-        except (AttributeError, ImportError, OSError, ValueError, requests.RequestException):
+        except (AttributeError, OSError, ValueError, PyPdfError, requests.RequestException):
             return ""
 
     def probe(self, candidate: dict) -> dict:
@@ -94,7 +108,9 @@ class UrlProbe:
             metadata = dict(candidate.get("metadata") or {})
             content_type = str((getattr(response, "headers", {}) or {}).get("Content-Type") or "").lower()
             if 200 <= http_status < 400 and "html" in content_type:
-                preview = self._html_preview(response)
+                preview, links = self._inspect_html(response)
+                if links:
+                    metadata["discovered_links"] = links
             elif 200 <= http_status < 400 and "pdf" in content_type and metadata.get("verify_pdf_text"):
                 preview = self._official_pdf_preview(response)
             else:

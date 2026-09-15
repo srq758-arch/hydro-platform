@@ -164,46 +164,12 @@ class TransactionContext:
         Returns:
             插入的记录ID
         """
-        # 默认值
-        defaults = {
-            'value_type': 'actual',
-            'period_type': 'calendar_year',
-            'measurement_scope': 'plant',
-            'validation_status': 'passed',
-            'publication_status': 'publishable',
-            'review_status': 'approved',
-            'confidence': kwargs.get('confidence', 0.8),
-            'value_raw': kwargs.get('value_raw'),
-            'unit_raw': kwargs.get('unit_raw', 'GWh'),
-            'source_id': kwargs.get('source_id'),
-            'created_at': now_iso(),
-            'updated_at': now_iso()
-        }
-
-        # 合并 kwargs
-        defaults.update(kwargs)
-
-        cursor = self.conn.execute("""
-            INSERT INTO generation_records (
-                entity_id, period_label, generation_gwh, evidence_id,
-                value_type, period_type, measurement_scope,
-                validation_status, publication_status, review_status,
-                confidence, value_raw, unit_raw, source_id,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            entity_id, period_label, generation_gwh, evidence_id,
-            defaults['value_type'], defaults['period_type'], defaults['measurement_scope'],
-            defaults['validation_status'], defaults['publication_status'], defaults['review_status'],
-            defaults['confidence'], defaults['value_raw'], defaults['unit_raw'], defaults['source_id'],
-            defaults['created_at'], defaults['updated_at']
-        ))
-
-        record_id = cursor.lastrowid
-        self._operations.append(f"promote_to_generation_records(entity_id={entity_id}, record_id={record_id})")
-        logger.debug(f"[{self.savepoint}] 升级为正式记录: entity_id={entity_id}, record_id={record_id}")
-
-        return record_id
+        # V5.2-A：该遗留事务没有 Candidate/Validation/审批版本上下文，禁止
+        # 直接写正式表。保留方法只为让陈旧调用以可诊断错误失败。
+        raise RuntimeError(
+            "ApprovalTransaction 直写入口已禁用；请通过 orchestrator 审批并由 "
+            "lifecycle.promotion.promote_candidate 正式写入"
+        )
 
     def mark_task_success(self):
         """标记任务为成功。"""

@@ -9,7 +9,9 @@ from __future__ import annotations
 import pytest
 
 from hydro_platform.common.enums import (
+    GenerationMetric,
     MeasurementScope,
+    NormalizedEnergyUnit,
     PeriodType,
     ValueType,
 )
@@ -34,6 +36,9 @@ def _cand(**over) -> ExtractionCandidate:
         period_type=PeriodType.CALENDAR_YEAR,
         period_label="2023",
         generation_gwh=100.0,
+        metric=GenerationMetric.GROSS_GENERATION,
+        normalized_unit=NormalizedEnergyUnit.GWH,
+        unit_raw="GWh",
         value_type=ValueType.ACTUAL,
         measurement_scope=MeasurementScope.PLANT,
         snippet="2023 年发电量 100 GWh",
@@ -150,6 +155,48 @@ def test_missing_entity_id_rejected(db):
         promote_candidate(
             db, cand, val, evidence_id=eid, review_approved=True, review_required=False
         )
+
+
+def test_missing_value_type_is_not_defaulted_to_actual(db):
+    cand = _cand(value_type=None)
+    val = validate_candidate(cand)
+    eid = _save_evidence(db, cand)
+    with pytest.raises(PromotionError, match="value_type"):
+        promote_candidate(
+            db, cand, val, evidence_id=eid, review_approved=True, review_required=False
+        )
+
+
+def test_missing_scope_is_not_defaulted_to_plant(db):
+    cand = _cand(measurement_scope=None)
+    val = validate_candidate(cand)
+    eid = _save_evidence(db, cand)
+    with pytest.raises(PromotionError, match="measurement_scope"):
+        promote_candidate(
+            db, cand, val, evidence_id=eid, review_approved=True, review_required=False
+        )
+
+
+def test_missing_metric_cannot_be_approved_into_formal_records(db):
+    cand = _cand(metric=None)
+    val = validate_candidate(cand)
+    eid = _save_evidence(db, cand)
+    with pytest.raises(PromotionError, match="Validation|metric"):
+        promote_candidate(
+            db, cand, val, evidence_id=eid, review_approved=True, review_required=True
+        )
+    assert db.execute("SELECT COUNT(*) FROM generation_records").fetchone()[0] == 0
+
+
+def test_missing_normalized_unit_cannot_be_approved_into_formal_records(db):
+    cand = _cand(normalized_unit=None)
+    val = validate_candidate(cand)
+    eid = _save_evidence(db, cand)
+    with pytest.raises(PromotionError, match="Validation|unit"):
+        promote_candidate(
+            db, cand, val, evidence_id=eid, review_approved=True, review_required=True
+        )
+    assert db.execute("SELECT COUNT(*) FROM generation_records").fetchone()[0] == 0
 
 
 def test_approved_review_promotes(db):

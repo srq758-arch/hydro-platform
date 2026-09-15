@@ -4,40 +4,78 @@
 """
 
 from __future__ import annotations
-from typing import List, Optional
+import json
+from typing import List
 import sqlite3
 
 from ..common.logging_setup import get_logger
 from ..common.enums import ContentKind
 from ..registry.source_registry import SourceRegistry
-from ..discovery.resolver import DiscoveryResolver
+from ..models.source_pipeline import CandidateSource
+from .source_contract_adapter import (
+    normalize_candidate_sources,
+    source_task_id,
+    to_candidate_source,
+)
 
 logger = get_logger(__name__)
 
 
-class SourceReference:
-    """来源引用（兼容原有 url_resolver 返回格式）"""
-    def __init__(
-        self,
-        url: str,
-        title: str = None,
-        publisher: str = None,
-        expected: ContentKind = ContentKind.ANY,
-        language: str = None
-    ):
-        self.url = url
-        self.title = title
-        self.publisher = publisher
-        self.expected = expected
-        self.language = language
+def _confirmed_candidate_from_ledger(conn: sqlite3.Connection, task) -> CandidateSource | None:
+    """读取用户确认后保存的统一 CandidateSource，保留 SearchLead lineage。"""
+    url = str(getattr(task, "user_specified_source", "") or "").strip()
+    if not url:
+        return None
+    task_id = source_task_id(task)
+    try:
+        row = conn.execute(
+            """SELECT candidate_source_id, task_id, lead_id, url, canonical_url, title,
+                      publisher, source_type, discovery_method, expected_content_kind,
+                      language, priority_score, status, metadata_json, lineage_hash, created_at
+               FROM candidate_sources
+               WHERE task_id=? AND (url=? OR canonical_url=?)
+               ORDER BY created_at DESC LIMIT 1""",
+            (task_id, url, url),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        # 正式旧库尚未升级来源契约时沿用兼容 SourceRef 分支。
+        return None
+    if row is None:
+        return None
+    try:
+        metadata = json.loads(row["metadata_json"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        metadata = {}
+    try:
+        content_kind = ContentKind(row["expected_content_kind"] or "any")
+    except ValueError:
+        content_kind = ContentKind.ANY
+    return CandidateSource(
+        candidate_source_id=row["candidate_source_id"],
+        task_id=row["task_id"],
+        lead_id=row["lead_id"],
+        url=row["url"],
+        canonical_url=row["canonical_url"],
+        title=row["title"],
+        publisher=row["publisher"],
+        source_type=row["source_type"],
+        discovery_method=row["discovery_method"],
+        expected_content_kind=content_kind,
+        language=row["language"],
+        priority_score=row["priority_score"],
+        status=row["status"],
+        metadata=metadata,
+        lineage_hash=row["lineage_hash"],
+        created_at=row["created_at"],
+    )
 
 
 def resolve_sources_enhanced(
     conn: sqlite3.Connection,
     task,
     fallback_resolver=None,
-    discovery_resolver: DiscoveryResolver | None = None,
-) -> List[SourceReference]:
+    discovery_resolver: object | None = None,
+) -> List[CandidateSource]:
     """增强的来源解析：SourceRegistry → Discovery → Fallback
 
     Args:
@@ -46,7 +84,7 @@ def resolve_sources_enhanced(
         fallback_resolver: 原有的 url_resolver（作为最后手段）
 
     Returns:
-        SourceReference 列表
+        CandidateSource 列表。旧 SourceReference/SourceRef 只允许作为输入兼容层。
 
     流程：
     D01修复：如果任务是用户手动指定来源(source_type='manual')，直接返回用户指定的来源，跳过自动搜索
@@ -62,14 +100,16 @@ def resolve_sources_enhanced(
     if getattr(task, 'source_type', None) in {'manual', 'intelligent'} and getattr(task, 'user_specified_source', None):
         label = "智能任务已确认来源" if task.source_type == 'intelligent' else "用户指定来源"
         logger.info(f"使用{label}（不触发自动搜索）: {task.user_specified_source}")
-        return [SourceReference(
-            url=task.user_specified_source,
+        if task.source_type == "intelligent":
+            saved = _confirmed_candidate_from_ledger(conn, task)
+            if saved is not None:
+                return [saved]
+        return [to_candidate_source(
+            {"url": task.user_specified_source, "source_type": task.source_type},
+            task_id=source_task_id(task),
+            discovery_method="user_confirmed_url",
             title=label,
             publisher="Intelligent task" if task.source_type == 'intelligent' else "Manual",
-            # 已确认 URL 的实际载体可能是 PDF、HTML、Excel 或 CSV。
-            # "unknown" 不是宽松类型，而会被下载校验当成强制类型，导致任何
-            # 实际文档都被误判为 NOT_EXPECTED_TYPE；此处应允许路由器自主识别。
-            expected=ContentKind.ANY,
         )]
 
     # PipelineContext 的注入 resolver 是离线测试和受控批处理的明确来源。
@@ -80,12 +120,17 @@ def resolve_sources_enhanced(
             refs = fallback_resolver.resolve(task)
             if refs:
                 logger.info("使用注入的受控来源：%d 个", len(refs))
-                return refs
+                return normalize_candidate_sources(
+                    refs,
+                    task_id=source_task_id(task),
+                    discovery_method="injected_resolver",
+                )
         except Exception as e:
             logger.error(f"注入来源解析失败: {e}", exc_info=True)
 
     # 准备任务字典（供 Discovery 使用）
     task_dict = {
+        "task_id": source_task_id(task),
         "entity_id": task.entity_id,
         "entity_name": getattr(task, "entity_name", None) or _get_entity_name(conn, task.entity_id),
         "target_period": task.target_period,
@@ -95,46 +140,64 @@ def resolve_sources_enhanced(
     # Step 1: 查询历史来源。v2 已提供 Registry 所需列；新成功来源也会由
     # orchestrator._register_source 回写 entity/metric/year，使下一次任务可复用。
     registry = SourceRegistry(conn)
-    source = registry.query_best_source(
-        entity_id=task.entity_id,
-        metric="generation",
-        year=int(task.target_period) if task.target_period and task.target_period.isdigit() else None,
-    )
+    try:
+        sources = registry.query_sources(
+            entity_id=task.entity_id,
+            metric="generation",
+            year=int(task.target_period) if task.target_period and task.target_period.isdigit() else None,
+            limit=5,
+        )
+    except sqlite3.OperationalError as exc:
+        # Minimal/legacy callers may not have initialized the optional source
+        # registry yet. Treat that as "no remembered source" and continue to
+        # Discovery rather than crashing source resolution.
+        logger.warning("来源注册表不可用，继续 Discovery: %s", exc)
+        sources = []
 
-    if source:
-        # Step 2: 预检查
-        if registry.precheck_source(source):
-            logger.info(f"使用历史来源: {source['source_url']} (评分: {source['source_reliability_score']:.2f})")
-            return [SourceReference(
-                url=source["source_url"],
-                title=f"历史来源 ({source['source_type']})",
-                # 注册表的 document_type 是历史线索，不是下载约束：来源可能
-                # 重定向、改版或使用不准确的响应头，交由采集器按实际内容识别。
-                expected=ContentKind.ANY,
-            )]
-        else:
-            logger.warning(f"历史来源预检失败: {source['source_url']}")
+    if sources:
+        eligible = [source for source in sources if registry.precheck_source(source)]
+        for source in sources:
+            if source not in eligible:
+                logger.warning("历史来源预检失败: %s", source["source_url"])
+        if eligible:
+            logger.info("使用 %d 个有效历史来源候选", len(eligible))
+            return [
+                to_candidate_source(
+                    source,
+                    task_id=source_task_id(task),
+                    discovery_method="source_registry",
+                    title=f"历史来源 ({source['source_type']})",
+                )
+                for source in eligible
+            ]
 
     # Step 3: 触发 Discovery
     logger.info("未找到有效历史来源，开始 Discovery")
 
     try:
-        resolver = discovery_resolver or DiscoveryResolver(conn)
+        # 生产默认入口也必须使用 C0 的统一服务，不能在未注入 resolver
+        # 时悄悄退回旧 DiscoveryResolver。旧类只保留给历史脚本/兼容调用。
+        if discovery_resolver is None:
+            from ..intelligence.source_discovery_service import (
+                SourceDiscoveryService,
+                TaskSourceDiscoveryAdapter,
+            )
+            resolver = TaskSourceDiscoveryAdapter(SourceDiscoveryService(conn))
+        else:
+            resolver = discovery_resolver
         candidates = resolver.discover(task_dict, min_candidates=3, max_candidates=5)
 
         if candidates:
             # 保留评分顺序的候选队列；编排器会在首来源失败后继续尝试后续来源。
             logger.info("Discovery 返回 %d 个候选来源", len(candidates))
-            return [
-                SourceReference(
-                    url=item["url"],
-                    title=f"Discovery ({item.get('source_type', 'unknown')})",
-                    # Discovery 的 document_type 是 URL/LLM 推测，尤其 unknown
-                    # 不能被当作“只能下载 unknown 文件”的强制条件。
-                    expected=ContentKind.ANY,
-                )
-                for item in candidates
-            ]
+            normalized = normalize_candidate_sources(
+                candidates,
+                task_id=source_task_id(task),
+            )
+            for candidate in normalized:
+                if not candidate.title:
+                    candidate.title = f"Discovery ({candidate.source_type})"
+            return normalized
 
     except Exception as e:
         logger.error(f"Discovery 失败: {e}", exc_info=True)

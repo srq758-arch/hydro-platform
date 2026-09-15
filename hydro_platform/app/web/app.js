@@ -740,6 +740,8 @@ async function discoverTrustedSources(entityId, presetYear = null) {
     if (!result.success) throw new Error(result.error || '来源发现失败');
     const items = result.items || [];
     const reviewItems = result.review_items || [];
+    const excludedItems = result.excluded_items || [];
+    const providerDiagnostics = result.provider_diagnostics || [];
     const rows = items.length ? items.map(item => {
       const url = item.final_url || item.canonical_url || item.url;
       const encodedUrl = encodeURIComponent(url);
@@ -752,7 +754,10 @@ async function discoverTrustedSources(entityId, presetYear = null) {
       const channelMap = {
         deepseek_responses_web_search: 'DeepSeek 原生搜索',
         deepseek_planned_web_search: '程序搜索 + DeepSeek 筛选',
-        gem_wiki_external_link: 'GEM 外链线索'
+        gem_wiki_external_link: 'GEM 外链线索',
+        html_attachment_link: '入口页公开附件',
+        official_site_navigation: '已验证官网站内导航',
+        official_site_sitemap: '已验证官网 Sitemap'
       };
       const channel = channelMap[item.discovery_method] || item.discovery_method || '统一发现';
       return `<tr>
@@ -778,16 +783,55 @@ async function discoverTrustedSources(entityId, presetYear = null) {
         <td style="white-space:nowrap;min-width:205px"><a class="btn btn-outline btn-sm" style="white-space:nowrap;display:inline-flex" href="${esc(url)}" target="_blank">打开核实</a> <button class="btn btn-primary btn-sm" style="white-space:nowrap" onclick="useReviewedLead('${entityId}','${year}','${encodedUrl}','${encodedTitle}','${encodedStationName}')">已核实，带入新增数据</button></td>
       </tr>`;
     }).join('');
+    const excludedRows = excludedItems.map(item => {
+      const url = item.final_url || item.canonical_url || item.candidate_url || item.url;
+      const status = item.status === 'rejected' ? '已人工排除'
+        : item.access_status === 'unavailable' ? '不可访问'
+        : item.status === 'ineligible' ? '不符合任务条件' : '已排除';
+      const reason = item.error || item.match_reason || '未通过自动发现门槛。';
+      const canOpen = /^https?:\/\//i.test(url || '');
+      return `<tr>
+        <td style="max-width:330px;word-break:break-all">${canOpen ? `<a href="${esc(url)}" target="_blank">${esc(item.link_text || url)}</a>` : esc(item.link_text || url || '—')}<br><span style="font-size:12px;color:var(--text-muted)">${esc(item.section_title || item.discovery_method || '来源审计项')}</span></td>
+        <td><span class="badge-status st-failed">${esc(status)}</span></td>
+        <td><span class="badge-status st-neutral">${esc(item.access_status || 'unknown')}</span></td>
+        <td style="max-width:330px;font-size:12px;color:var(--text-muted)">${esc(reason)}</td>
+        <td>${canOpen ? `<a class="btn btn-outline btn-sm" href="${esc(url)}" target="_blank">查看</a>` : '—'}</td>
+      </tr>`;
+    }).join('');
     const recommendation = result.recommendation;
+    const diagnostics = providerDiagnostics.length
+      ? `<div style="font-size:12px;color:var(--text-muted);margin:0 0 12px">检索通道：${providerDiagnostics.map(item => {
+          const provider = esc(item.provider || 'unknown');
+          const status = item.status === 'ok' ? '完成'
+            : item.status === 'metrics' ? '统计'
+            : item.status === 'not_configured' ? '未配置'
+            : item.status === 'disabled' ? '已禁用'
+            : item.status === 'rate_limited' ? '速率受限'
+            : item.status === 'budget_exhausted' ? '预算耗尽'
+            : item.status === 'circuit_open' ? '已熔断'
+            : item.status === 'empty' ? '无结果' : '失败';
+          const count = Number.isFinite(Number(item.count)) ? `，${Number(item.count)} 条` : '';
+          if (item.status === 'metrics' && item.metrics) {
+            const metrics = item.metrics;
+            const cost = Number.isFinite(Number(metrics.estimated_cost)) ? `，估算成本 ${Number(metrics.estimated_cost).toFixed(4)}` : '';
+            const calls = metrics.providers ? Object.values(metrics.providers).reduce((sum, value) => sum + Number(value.calls || 0), 0) : null;
+            return `${provider}（${status}${calls === null ? '' : `，${calls} 次调用`}${cost}）`;
+          }
+          const detail = item.error ? `：${esc(item.error)}` : '';
+          return `${provider}（${status}${count}${detail}）`;
+        }).join('；')}</div>`
+      : '';
     const decision = recommendation
       ? `<div style="padding:12px;background:var(--green-bg);border-radius:var(--radius-sm);margin-bottom:14px"><strong>推荐来源已找到</strong><br><span style="font-size:13px">${esc(recommendation.link_text || recommendation.final_url || recommendation.url)}：${esc(recommendation.match_reason || '')}</span></div>`
-      : `<div style="padding:12px;background:var(--warning-bg);border-radius:var(--radius-sm);margin-bottom:14px"><strong>未找到可自动处理的合格来源</strong><br><span style="font-size:13px">已过滤无关、错误年份、非年度发电量或不可访问的链接。${reviewItems.length ? `另发现 ${reviewItems.length} 条待人工核实线索，已在下方列出，不能直接创建采集任务。` : ''}</span></div>`;
+      : `<div style="padding:12px;background:var(--warning-bg);border-radius:var(--radius-sm);margin-bottom:14px"><strong>未找到可自动处理的合格来源</strong><br><span style="font-size:13px">已过滤无关、错误年份、非年度发电量或不可访问的链接。${reviewItems.length ? `另发现 ${reviewItems.length} 条待人工核实线索，已在下方列出，不能直接创建采集任务。` : ''}${excludedItems.length ? ` 另有 ${excludedItems.length} 条已排除/不可用审计项可展开查看。` : ''}</span></div>`;
     const content = `
       ${decision}
       <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">${esc(result.message || '仅完成来源发现。')}</p>
+      ${diagnostics}
       <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">“使用此来源”会自动带入电站、年份、URL 和标题；随后由您点击“开始下载并处理”确认启动采集。</p>
       <table class="data-table"><thead><tr><th>来源</th><th>等级 / 发现方式</th><th>访问状态</th><th>匹配证据</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>
-      ${reviewRows ? `<div style="margin-top:18px"><div style="font-weight:600;margin-bottom:8px">待人工核实线索</div><p style="font-size:12px;color:var(--text-muted);margin:0 0 8px">这些链接确实由搜索发现并可访问，但未通过自动年度校验。打开核实后，只有您确认它对应目标电站、年份与全年实际发电量，才可带入新增数据。</p><table class="data-table"><thead><tr><th>来源</th><th>状态</th><th>访问状态</th><th>未通过原因</th><th>操作</th></tr></thead><tbody>${reviewRows}</tbody></table></div>` : ''}`;
+      ${reviewRows ? `<div style="margin-top:18px"><div style="font-weight:600;margin-bottom:8px">待人工核实线索</div><p style="font-size:12px;color:var(--text-muted);margin:0 0 8px">这些链接确实由搜索发现并可访问，但未通过自动年度校验。打开核实后，只有您确认它对应目标电站、年份与全年实际发电量，才可带入新增数据。</p><table class="data-table"><thead><tr><th>来源</th><th>状态</th><th>访问状态</th><th>未通过原因</th><th>操作</th></tr></thead><tbody>${reviewRows}</tbody></table></div>` : ''}
+      ${excludedRows ? `<details style="margin-top:18px"><summary style="cursor:pointer;font-weight:600">已排除 / 不可用审计项（${excludedItems.length}）</summary><p style="font-size:12px;color:var(--text-muted);margin:8px 0">这些链接保留用于解释发现结果；没有“使用此来源”按钮，不能直接创建任务或进入正式数据。</p><table class="data-table"><thead><tr><th>来源</th><th>状态</th><th>访问状态</th><th>排除原因</th><th>操作</th></tr></thead><tbody>${excludedRows}</tbody></table></details>` : ''}`;
     showModal(`智能发现可信来源 · ${esc(result.entity_name || entityId)} · ${esc(year)}`, content, {
       width: '920px', footer: '<button class="btn btn-primary" onclick="closeModal()">关闭</button>'
     });
@@ -1897,9 +1941,9 @@ function showBatchSummary() {
 
 // ---------- CSV 批量导入 ----------
 function downloadCsvTemplate() {
-  const template = `entity_id,canonical_name,period_label,generation_gwh,value_raw,unit_raw,confidence,source_url,publisher,publish_date
-three_gorges_dam,三峡水电站,2024,103.4,103.4,GWh,high,https://example.com,三峡集团,2025-01-15
-xiluodu_dam,溪洛渡水电站,2024,60.8,60.8,GWh,high,https://example.com,三峡集团,2025-01-15`;
+  const template = `entity_id,canonical_name,period_label,period_type,metric,generation_gwh,value_raw,unit_raw,value_type,measurement_scope,confidence,source_url,publisher,publish_date
+three_gorges_dam,三峡水电站,2024,calendar_year,gross_generation,103400,1034,亿千瓦时,actual,plant,0.9,https://example.com,三峡集团,2025-01-15
+xiluodu_dam,溪洛渡水电站,2024,calendar_year,gross_generation,60800,608,亿千瓦时,actual,plant,0.9,https://example.com,三峡集团,2025-01-15`;
 
   const blob = new Blob([template], { type: 'text/csv;charset=utf-8;' });
   const link = document.createElement('a');
@@ -2951,6 +2995,10 @@ async function viewReviewDetail(recordId) {
 
   const [sl, sc] = statusLabel(d.publication_status, d.review_status);
   const reviewIdLiteral = JSON.stringify(String(d.id));
+  const ocrMeta = d.evidence_metadata && d.evidence_metadata.ocr;
+  const ocrRegion = ocrMeta && ocrMeta.region
+    ? Object.entries(ocrMeta.region).map(([k, v]) => `${k}=${v}`).join(', ')
+    : '整页';
 
   const content = `
     <div class="grid-2" style="gap:16px">
@@ -2989,9 +3037,28 @@ async function viewReviewDetail(recordId) {
             <td>${esc(d.page_number || '—')}</td></tr>
           <tr><td style="color:var(--text-muted)">表格</td>
             <td>${esc(d.table_reference || '—')}</td></tr>
+          <tr><td style="color:var(--text-muted)">定位</td>
+            <td><code style="font-size:12px">${esc(d.locator || '—')}</code></td></tr>
         </table>
       </div>
     </div>
+
+    ${Array.isArray(d.candidate_flags) && d.candidate_flags.includes('OCR_DERIVED') ? `
+    <div class="card" style="margin-top:16px;border-left:3px solid var(--warning)">
+      <div class="card-title">OCR 识别提示</div>
+      <div style="font-size:13px;line-height:1.6;color:var(--text-muted)">
+        本候选来自扫描 PDF 的 OCR（${esc(d.locator || '页码未记录')}），必须人工核对原始页面后才能通过复核。
+      </div>
+      <table style="margin-top:8px">
+        <tr><td style="color:var(--text-muted);width:120px">引擎</td><td>${esc(ocrMeta?.engine || '—')} ${esc(ocrMeta?.engine_version || '')}</td></tr>
+        <tr><td style="color:var(--text-muted)">语言</td><td>${esc(ocrMeta?.language || '—')}</td></tr>
+        <tr><td style="color:var(--text-muted)">识别区域</td><td><code style="font-size:12px">${esc(ocrRegion)}</code></td></tr>
+        <tr><td style="color:var(--text-muted)">原图 SHA256</td><td><code style="font-size:11px;word-break:break-all">${esc(ocrMeta?.source_image_sha256 || '—')}</code></td></tr>
+      </table>
+      <div id="review-ocr-preview" style="margin-top:12px">
+        <button class="btn btn-outline btn-sm" onclick='loadReviewOcrPreview(${reviewIdLiteral})'>查看原始页</button>
+      </div>
+    </div>` : ''}
 
     ${d.validation_issues && d.validation_issues.length > 0 ? `
     <div class="card" style="margin-top:16px">
@@ -3038,6 +3105,24 @@ async function viewReviewDetail(recordId) {
 
   showModal(`复核详情 #${d.id}`, content, { width: '900px', footer });
   loadReviewNotes(recordId);
+}
+
+async function loadReviewOcrPreview(reviewId) {
+  const box = document.getElementById('review-ocr-preview');
+  if (!box) return;
+  box.innerHTML = '<div class="spinner">正在渲染原始页…</div>';
+  try {
+    const result = await api().get_review_ocr_preview(reviewId, null, 150);
+    if (!result || result.status !== 'success') {
+      box.innerHTML = `<div class="empty">${esc(result?.message || '原始页暂不可预览')}</div>`;
+      return;
+    }
+    box.innerHTML = `
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">第 ${esc(result.page_number)} 页 · ${esc(result.width)}×${esc(result.height)} · ${esc(result.dpi)} DPI${result.region_highlighted ? ' · 红框为 OCR 区域' : ''}</div>
+      <img src="${esc(result.image_data)}" alt="OCR 原始页预览" style="max-width:100%;max-height:560px;border:1px solid var(--border);border-radius:var(--radius-sm);display:block" />`;
+  } catch (e) {
+    box.innerHTML = `<div class="empty">原始页预览失败：${esc(e)}</div>`;
+  }
 }
 
 function addReviewNote(recordId) {
@@ -3361,8 +3446,12 @@ async function renderSettings() {
   try {
     const info = await pywebview.api.get_system_info();
     const llmConfig = await pywebview.api.get_llm_config();
+    let ocrInfo = { available: false, dependencies: {}, tesseract: {}, errors: ['能力探测不可用'], recommendation: '请检查程序版本' };
+    try { ocrInfo = await pywebview.api.get_ocr_capabilities(); } catch (e) { console.warn('[Settings] OCR capability probe failed:', e); }
     const db = info.database || {};
     const storage = info.storage || {};
+    const ocrDeps = ocrInfo.dependencies || {};
+    const ocrStatus = ocrInfo.available ? '可用' : '不可用（扫描 PDF 将转人工复核）';
 
     main.innerHTML = `
       <div class="page-header">
@@ -3458,6 +3547,27 @@ async function renderSettings() {
           <p style="margin-top:12px;font-size:13px;color:var(--text-muted);">
             注意：清空测试数据只会删除测试环境数据，不会影响正式数据库。
           </p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">PDF / OCR 能力</div>
+        <div style="padding:16px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+            <span style="width:9px;height:9px;border-radius:50%;background:${ocrInfo.available ? '#10b981' : '#f59e0b'};"></span>
+            <strong>${esc(ocrStatus)}</strong>
+          </div>
+          <table class="data-table">
+            <tbody>
+              <tr><td>PyMuPDF</td><td>${ocrDeps.pymupdf ? '已安装' : '未安装'}</td></tr>
+              <tr><td>Pillow</td><td>${ocrDeps.pillow ? '已安装' : '未安装'}</td></tr>
+              <tr><td>pytesseract</td><td>${ocrDeps.pytesseract ? '已安装' : '未安装'}</td></tr>
+              <tr><td>Tesseract</td><td>${esc(ocrInfo.tesseract?.version || '未检测到')}</td></tr>
+              <tr><td>语言包</td><td>${esc((ocrInfo.tesseract?.languages || []).join(', ') || '未检测到')}</td></tr>
+            </tbody>
+          </table>
+          <div style="margin-top:10px;font-size:12px;color:var(--text-muted)">${esc(ocrInfo.recommendation || '')}</div>
+          ${ocrInfo.errors && ocrInfo.errors.length ? `<div style="margin-top:8px;font-size:12px;color:var(--danger)">${ocrInfo.errors.map(esc).join('<br>')}</div>` : ''}
         </div>
       </div>
 

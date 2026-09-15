@@ -3,10 +3,57 @@
 提供测试数据库初始化、完整schema创建等通用fixture。
 """
 
+import os
+import shutil
 import sqlite3
 from pathlib import Path
 
 import pytest
+
+
+# These files are interactive/manual diagnostic programs (they print reports,
+# return booleans, or depend on execution order).  They remain runnable by file,
+# but are not part of pytest collection.  Their maintained replacements live in
+# tests/unit, tests/integration, tests/contract and tests/benchmark.
+collect_ignore = [
+    "test_deep_discovery.py",
+    "test_google_search.py",
+    "test_review_interface.py",
+    "test_integration.py",
+    "test_master_registry.py",
+    "test_project_registry.py",
+    "test_project_station_linking.py",
+]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def isolate_implicit_database_connections(tmp_path_factory):
+    """Make every bare ``connect()`` use a disposable database during pytest.
+
+    Several historical tests call the production connection factory without an
+    explicit path.  A full-tree run must never be able to mutate ``data/db``.
+    The session copy retains realistic schema/seed content while remaining
+    completely separate from the user's database.
+    """
+    isolated_root = tmp_path_factory.mktemp("hydro_implicit_data")
+    isolated_db_dir = isolated_root / "db"
+    isolated_db_dir.mkdir(parents=True, exist_ok=True)
+    # Use a byte copy of the production-shaped baseline for implicit
+    # ``connect()`` calls.  The explicit Api(data_mode="test") path remains a
+    # separate database under ``isolated_root/test`` so isolation tests are real.
+    source_db = Path(__file__).parent.parent / "data" / "db" / "hydro.db"
+    if source_db.exists():
+        shutil.copy2(source_db, isolated_db_dir / "hydro.db")
+
+    previous = os.environ.get("HYDRO_DATA_DIR")
+    os.environ["HYDRO_DATA_DIR"] = str(isolated_root)
+    try:
+        yield isolated_root
+    finally:
+        if previous is None:
+            os.environ.pop("HYDRO_DATA_DIR", None)
+        else:
+            os.environ["HYDRO_DATA_DIR"] = previous
 
 
 @pytest.fixture

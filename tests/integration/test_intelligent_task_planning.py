@@ -48,7 +48,8 @@ def test_intelligent_task_creates_plan_then_requires_candidate_confirmation(tmp_
     conn = api.get_db_connection()
     assert conn.execute("SELECT COUNT(*) FROM intelligent_task_plans").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM intelligent_task_events").fetchone()[0] >= 3
-    assert conn.execute("SELECT COUNT(*) FROM source_discoveries").fetchone()[0] == 1
+    # 统一服务会保留被硬校验排除的权威目录等线索，不能只按合格项计数。
+    assert conn.execute("SELECT COUNT(*) FROM source_discoveries").fetchone()[0] >= 1
     assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0
     conn.close()
@@ -59,6 +60,13 @@ def test_intelligent_task_creates_plan_then_requires_candidate_confirmation(tmp_
     task = conn.execute("SELECT source_type, user_specified_source FROM tasks").fetchone()
     assert tuple(task) == ("intelligent", candidate["url"])
     assert conn.execute("SELECT status FROM intelligent_task_plans").fetchone()[0] == "collection_queued"
+    lineage = conn.execute(
+        """SELECT sl.url, cs.lead_id, cs.canonical_url
+           FROM candidate_sources cs
+           LEFT JOIN search_leads sl ON sl.lead_id=cs.lead_id"""
+    ).fetchone()
+    assert tuple(lineage) == (candidate["url"], lineage[1], candidate["url"])
+    assert lineage[1]
     conn.close()
 
 

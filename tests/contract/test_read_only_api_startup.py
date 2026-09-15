@@ -48,12 +48,19 @@ def test_connect_exposes_busy_timeout_and_read_only_mode(tmp_path: Path):
         readonly.close()
 
 
-def test_frontend_boot_guard_survives_navigation():
+def test_frontend_navigation_preserves_session_state_contract():
     app_js = (Path(__file__).parents[2] / "hydro_platform" / "app" / "web" / "app.js").read_text(
         encoding="utf-8"
     )
+
+    # Navigation must preserve the object that carries the boot guard and the
+    # per-page draft state.  Do not bind this contract to the old, exact
+    # ``params`` assignment: navigation now intentionally sanitises transient
+    # route flags into ``visibleParams`` before exposing them to renderers.
     assert "if (appState._booted) return;" in app_js
-    assert "appState = { ...appState, route, params };" in app_js
+    assert "pageStates: Object.create(null)" in app_js
+    assert "snapshotCurrentPageState();" in app_js
+    assert "appState = { ...appState, route, params: visibleParams };" in app_js
 
 
 def test_data_space_info_reports_legacy_database_without_migrating(tmp_path: Path, monkeypatch):

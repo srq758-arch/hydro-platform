@@ -12,6 +12,7 @@ validation → evidence → review-gate →（人工 approve）→ promotion。
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,8 @@ import pytest
 from hydro_platform.acquisition.http_client import HttpClient
 from hydro_platform.acquisition.router import AcquisitionRouter
 from hydro_platform.acquisition.transport import RawResponse
-from hydro_platform.common.enums import ContentKind, TaskStatus
+from hydro_platform.common.enums import AcquisitionErrorCode, ContentKind, TaskStatus
+from hydro_platform.acquisition.result import FetchResult
 from hydro_platform.database.repositories import (
     EvidenceRepository,
     GenerationRepository,
@@ -28,9 +30,14 @@ from hydro_platform.database.repositories import (
 from hydro_platform.pipeline import PipelineContext, SourceRef
 from hydro_platform.pipeline.orchestrator import apply_review_decision, run_task
 from hydro_platform.pipeline.station_runner import run_station
+from hydro_platform.parsing.pdf_ocr import OcrRegion
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "three_gorges_2020.html"
 STATION_URL = "https://example.gov/three-gorges/2020"
+MISSING_URL = "https://example.gov/missing"
+EMPTY_URL = "https://example.gov/no-generation"
+WRONG_YEAR_URL = "https://example.gov/wrong-year"
+BLOCKED_URL = "https://example.gov/browser-blocked"
 
 
 class ScriptedTransport:
@@ -61,6 +68,28 @@ class FixedResolver:
 
     def resolve(self, task):
         return [SourceRef(url=STATION_URL, expected=ContentKind.HTML, title="三峡2020")]
+
+
+class MultiResolver:
+    def __init__(self, urls):
+        self.urls = urls
+
+    def resolve(self, task):
+        return [SourceRef(url=url, expected=ContentKind.HTML) for url in self.urls]
+
+
+class FailingBrowser:
+    """记录浏览器 fallback，并返回可诊断的导航失败。"""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def fetch(self, url, *, expected=ContentKind.ANY):
+        self.calls.append(url)
+        return FetchResult.fail(
+            AcquisitionErrorCode.BROWSER_NAVIGATION_FAILED,
+            "scripted browser navigation failure",
+        )
 
 
 class AutoApprove:
@@ -206,6 +235,306 @@ def test_station_runner_end_to_end(ctx, db):
     results = run_station(ctx, "cn_three_gorges", years=[2020])
     assert len(results) == 1
     assert results[0].task_id
+
+
+def test_first_source_404_is_recorded_and_second_source_completes(db, tmp_path):
+    _seed_station(db, entity_id="cn_fallback_404")
+    transport = ScriptedTransport({STATION_URL: FIXTURE.read_bytes()})
+    ctx = PipelineContext(
+        conn=db,
+        router=AcquisitionRouter(http_client=HttpClient(transport=transport)),
+        url_resolver=MultiResolver([MISSING_URL, STATION_URL]),
+        raw_root=tmp_path / "raw",
+    )
+    task = _gen_task(db, entity_id="cn_fallback_404")
+
+    result = run_task(ctx, task)
+
+    assert result.final_status in (TaskStatus.SUCCESS, TaskStatus.NEEDS_REVIEW)
+    assert transport.calls[0] == MISSING_URL
+    assert STATION_URL in transport.calls
+    attempts = db.execute(
+        """SELECT status, failure_stage, failure_code, document_id
+           FROM source_attempts WHERE task_id=? ORDER BY rowid""",
+        (task.task_id,),
+    ).fetchall()
+    assert tuple(attempts[0])[:3] == ("failed", "ACQUISITION_FAILED", "HTTP_404")
+    assert attempts[1][0] == "succeeded"
+    assert attempts[1][3]
+
+
+def test_source_with_no_candidate_falls_through_to_next_source(db, tmp_path):
+    _seed_station(db, entity_id="cn_fallback_empty")
+    transport = ScriptedTransport({
+        EMPTY_URL: b"<html><body><p>General company information only.</p></body></html>",
+        STATION_URL: FIXTURE.read_bytes(),
+    })
+    ctx = PipelineContext(
+        conn=db,
+        router=AcquisitionRouter(http_client=HttpClient(transport=transport)),
+        url_resolver=MultiResolver([EMPTY_URL, STATION_URL]),
+        raw_root=tmp_path / "raw",
+    )
+    task = _gen_task(db, entity_id="cn_fallback_empty")
+
+    result = run_task(ctx, task)
+
+    assert result.final_status in (TaskStatus.SUCCESS, TaskStatus.NEEDS_REVIEW)
+    attempts = db.execute(
+        """SELECT status, failure_stage, failure_code
+           FROM source_attempts WHERE task_id=? ORDER BY rowid""",
+        (task.task_id,),
+    ).fetchall()
+    assert tuple(attempts[0]) == ("failed", "EXTRACTION_EMPTY", "EXTRACTION_EMPTY")
+    assert attempts[1][0] == "succeeded"
+
+
+def test_scanned_pdf_ocr_candidates_enter_review_gate(db, tmp_path):
+    """真实管线：无文字层 PDF 经注入 OCR 后只能进入人工复核。"""
+    _seed_station(db, entity_id="cn_ocr", tier="B")
+    from io import BytesIO
+    from pypdf import PdfWriter
+
+    stream = BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=300)
+    writer.write(stream)
+    pdf_body = stream.getvalue()
+    pdf_url = "https://example.gov/three-gorges/2020.pdf"
+
+    class PdfTransport(ScriptedTransport):
+        def fetch(self, url: str, *, headers, timeout) -> RawResponse:
+            self.calls.append(url)
+            return RawResponse(
+                status_code=200,
+                headers={"Content-Type": "application/pdf"},
+                body=pdf_body,
+                final_url=url,
+            )
+
+    class PdfResolver:
+        def resolve(self, task):
+            return [SourceRef(url=pdf_url, expected=ContentKind.PDF, title="扫描报告")]
+
+    class FakeOcr:
+        name = "fake-ocr"
+        version = "test-1"
+
+        def recognize(self, image_bytes: bytes, *, language: str, config: str = "") -> str:
+            return "Three Gorges Dam 2020 gross annual generation was 1234 GWh."
+
+    transport = PdfTransport({pdf_url: pdf_body})
+    ctx = PipelineContext(
+        conn=db,
+        router=AcquisitionRouter(http_client=HttpClient(transport=transport)),
+        url_resolver=PdfResolver(),
+        raw_root=tmp_path / "raw",
+        ocr_backend=FakeOcr(),
+        ocr_language="eng",
+        ocr_regions={1: OcrRegion(10, 10, 100, 100)},
+    )
+    task = _gen_task(db, entity_id="cn_ocr", year=2020)
+
+    result = run_task(ctx, task)
+
+    assert result.final_status == TaskStatus.NEEDS_REVIEW
+    assert result.review_ids
+    row = db.execute(
+        "SELECT payload FROM review_items WHERE review_id = ?",
+        (result.review_ids[0],),
+    ).fetchone()
+    assert row is not None
+    payload = json.loads(row["payload"])
+    assert "OCR_DERIVED" in row["payload"]
+    assert payload["evidence_metadata"]["ocr"]["engine"] == "fake-ocr"
+    assert payload["evidence_metadata"]["ocr"]["page_number"] == 1
+    assert payload["evidence_metadata"]["ocr"]["source_image_sha256"]
+    assert payload["evidence_metadata"]["ocr"]["region"] == {
+        "x0": 10, "y0": 10, "x1": 100, "y1": 100,
+    }
+    review = db.execute(
+        "SELECT candidate_id FROM review_items WHERE review_id = ?",
+        (result.review_ids[0],),
+    ).fetchone()
+    assert review is not None and review["candidate_id"]
+    evidence = db.execute(
+        """
+        SELECT e.page_number, e.table_reference, e.locator
+        FROM candidate_evidence ce
+        JOIN evidence e ON e.evidence_id = ce.evidence_id
+        WHERE ce.candidate_id = ?
+        """,
+        (review["candidate_id"],),
+    ).fetchone()
+    assert evidence is not None
+    assert evidence["page_number"] == 1
+    assert evidence["table_reference"] is None
+    assert evidence["locator"] == "page[1].ocr"
+
+
+def test_scanned_pdf_without_ocr_backend_is_actionable_failure(db, tmp_path, monkeypatch):
+    """真实管线：OCR 引擎缺失时必须返回 OCR_REQUIRED，而不是误报无数据。"""
+    _seed_station(db, entity_id="cn_ocr_unavailable", tier="B")
+    from io import BytesIO
+    from pypdf import PdfWriter
+    from hydro_platform.parsing import pdf_ocr
+
+    stream = BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=300)
+    writer.write(stream)
+    pdf_body = stream.getvalue()
+    pdf_url = "https://example.gov/three-gorges/2020-scanned.pdf"
+
+    class PdfTransport(ScriptedTransport):
+        def fetch(self, url: str, *, headers, timeout) -> RawResponse:
+            self.calls.append(url)
+            return RawResponse(
+                status_code=200,
+                headers={"Content-Type": "application/pdf"},
+                body=pdf_body,
+                final_url=url,
+            )
+
+    class PdfResolver:
+        def resolve(self, task):
+            return [SourceRef(url=pdf_url, expected=ContentKind.PDF, title="扫描报告")]
+
+    def unavailable_init(self):
+        raise pdf_ocr.PdfOcrUnavailable("测试：未安装 Tesseract")
+
+    monkeypatch.setattr(pdf_ocr.PytesseractBackend, "__init__", unavailable_init)
+    transport = PdfTransport({pdf_url: pdf_body})
+    ctx = PipelineContext(
+        conn=db,
+        router=AcquisitionRouter(http_client=HttpClient(transport=transport)),
+        url_resolver=PdfResolver(),
+        raw_root=tmp_path / "raw",
+    )
+    task = _gen_task(db, entity_id="cn_ocr_unavailable", year=2020)
+
+    result = run_task(ctx, task)
+
+    assert result.final_status == TaskStatus.FAILED
+    assert "OCR_REQUIRED" in (result.error or "")
+    assert "NO_QUALIFIED_SOURCE_FOUND" in (result.error or "")
+    attempt = db.execute(
+        "SELECT failure_code, error FROM source_attempts WHERE task_id = ?",
+        (task.task_id,),
+    ).fetchone()
+    assert attempt is not None
+    assert attempt["failure_code"] == "OCR_REQUIRED"
+    assert "OCR" in attempt["error"]
+
+
+def test_hard_gate_failure_is_recorded_while_later_source_succeeds(db, tmp_path):
+    _seed_station(db, entity_id="cn_fallback_gate")
+    wrong_year = (
+        b"<html><body><p>Three Gorges Dam 2019 gross generation was 100 GWh."
+        b"</p></body></html>"
+    )
+    transport = ScriptedTransport({
+        WRONG_YEAR_URL: wrong_year,
+        STATION_URL: FIXTURE.read_bytes(),
+    })
+    ctx = PipelineContext(
+        conn=db,
+        router=AcquisitionRouter(http_client=HttpClient(transport=transport)),
+        url_resolver=MultiResolver([WRONG_YEAR_URL, STATION_URL]),
+        raw_root=tmp_path / "raw",
+    )
+    task = _gen_task(db, entity_id="cn_fallback_gate", year=2020)
+
+    result = run_task(ctx, task)
+
+    assert result.final_status in (TaskStatus.SUCCESS, TaskStatus.NEEDS_REVIEW)
+    attempts = db.execute(
+        """SELECT status, failure_stage, failure_code
+           FROM source_attempts WHERE task_id=? ORDER BY rowid""",
+        (task.task_id,),
+    ).fetchall()
+    assert tuple(attempts[0]) == ("failed", "VALIDATION_FAILED", "HARD_GATE_FAILED")
+    assert attempts[1][0] == "succeeded"
+
+
+def test_source_budget_stops_before_next_candidate_with_explicit_reason(db, tmp_path):
+    _seed_station(db, entity_id="cn_source_budget")
+    transport = ScriptedTransport({STATION_URL: FIXTURE.read_bytes()})
+    ctx = PipelineContext(
+        conn=db,
+        router=AcquisitionRouter(http_client=HttpClient(transport=transport)),
+        url_resolver=MultiResolver([MISSING_URL, STATION_URL]),
+        raw_root=tmp_path / "raw",
+        max_source_attempts=1,
+    )
+    task = _gen_task(db, entity_id="cn_source_budget")
+
+    result = run_task(ctx, task)
+
+    assert result.final_status is TaskStatus.FAILED
+    assert result.failure_stage.value == "SOURCE_NOT_FOUND"
+    assert "NOT_FOUND_WITHIN_SEARCH_BUDGET" in result.error
+    assert transport.calls and set(transport.calls) == {MISSING_URL}
+    assert db.execute(
+        "SELECT COUNT(*) FROM source_attempts WHERE task_id=?", (task.task_id,)
+    ).fetchone()[0] == 1
+
+
+def test_all_sources_exhausted_has_explicit_non_budget_reason(db, tmp_path):
+    _seed_station(db, entity_id="cn_source_exhausted")
+    transport = ScriptedTransport({})
+    ctx = PipelineContext(
+        conn=db,
+        router=AcquisitionRouter(http_client=HttpClient(transport=transport)),
+        url_resolver=MultiResolver([MISSING_URL]),
+        raw_root=tmp_path / "raw",
+    )
+    task = _gen_task(db, entity_id="cn_source_exhausted")
+
+    result = run_task(ctx, task)
+
+    assert result.final_status is TaskStatus.FAILED
+    assert result.failure_stage.value == "SOURCE_NOT_FOUND"
+    assert "NO_QUALIFIED_SOURCE_FOUND" in result.error
+    assert "NOT_FOUND_WITHIN_SEARCH_BUDGET" not in result.error
+
+
+def test_waf_then_browser_failure_falls_through_to_next_source(db, tmp_path):
+    _seed_station(db, entity_id="cn_fallback_waf")
+    waf = (
+        b"<!doctype html><html><title>Just a moment...</title>"
+        b"<body>Verifying you are human</body></html>"
+    )
+    transport = ScriptedTransport({
+        BLOCKED_URL: waf,
+        STATION_URL: FIXTURE.read_bytes(),
+    })
+    browser = FailingBrowser()
+    ctx = PipelineContext(
+        conn=db,
+        router=AcquisitionRouter(
+            http_client=HttpClient(transport=transport),
+            browser_client=browser,
+        ),
+        url_resolver=MultiResolver([BLOCKED_URL, STATION_URL]),
+        raw_root=tmp_path / "raw",
+    )
+    task = _gen_task(db, entity_id="cn_fallback_waf")
+
+    result = run_task(ctx, task)
+
+    assert result.final_status in (TaskStatus.SUCCESS, TaskStatus.NEEDS_REVIEW)
+    assert browser.calls == [BLOCKED_URL]
+    assert transport.calls[:2] == [BLOCKED_URL, STATION_URL]
+    attempts = db.execute(
+        """SELECT status, failure_stage, failure_code
+           FROM source_attempts WHERE task_id=? ORDER BY rowid""",
+        (task.task_id,),
+    ).fetchall()
+    assert tuple(attempts[0]) == (
+        "failed", "ACQUISITION_FAILED", "BROWSER_NAVIGATION_FAILED"
+    )
+    assert attempts[1][0] == "succeeded"
 
 
 def _open_review_ids(db) -> list[str]:

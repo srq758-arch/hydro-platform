@@ -14,12 +14,37 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from ..common.enums import MeasurementScope, PeriodType, ValueType
+from ..common.enums import GenerationMetric, MeasurementScope, PeriodType, ValueType
 
 # 4 位年份（1900-2099），避免匹配到 5 位数字
 _YEAR_RE = re.compile(r"(?<!\d)(19|20)\d{2}(?!\d)")
 _QUARTER_RE = re.compile(r"\b(Q[1-4])\b|第?([一二三四1-4])季度", re.IGNORECASE)
 _FISCAL_RE = re.compile(r"\bFY\s?\d{2,4}\b|财年|财政年度|fiscal\s+year", re.IGNORECASE)
+_MONTH_RE = re.compile(
+    r"(?:19|20)\d{2}[-/.年]\s*(?:0?[1-9]|1[0-2])\s*月?|"
+    r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|"
+    r"dec(?:ember)?)\b",
+    re.IGNORECASE,
+)
+_YTD_RE = re.compile(
+    r"\bytd\b|year[- ]to[- ]date|年初至今|截至.{0,12}(?:累计|发电)", re.IGNORECASE
+)
+_ROLLING_RE = re.compile(
+    r"rolling\s*12\s*months?|trailing\s*12\s*months?|滚动\s*12\s*个?月",
+    re.IGNORECASE,
+)
+_FULL_YEAR_RE = re.compile(
+    r"全年|年度|全年度|annual(?:ly)?|full\s+year|calendar\s+year|yearly",
+    re.IGNORECASE,
+)
+
+_METRIC_PATTERNS = (
+    (GenerationMetric.NET_GENERATION, re.compile(r"净发电量|net\s+(?:electricity\s+)?generation", re.IGNORECASE)),
+    (GenerationMetric.ENERGY_SENT_OUT, re.compile(r"上网电量|送出电量|energy\s+sent\s+out|electricity\s+supplied", re.IGNORECASE)),
+    (GenerationMetric.ELECTRICITY_SALES, re.compile(r"售电量|electricity\s+sales|power\s+sales", re.IGNORECASE)),
+    (GenerationMetric.GROSS_GENERATION, re.compile(r"总发电量|毛发电量|gross\s+(?:electricity\s+)?generation", re.IGNORECASE)),
+)
 
 _FORECAST_WORDS = (
     "forecast", "projected", "projection", "estimate", "estimated", "expected",
@@ -27,6 +52,7 @@ _FORECAST_WORDS = (
 )
 _ACTUAL_WORDS = (
     "actual", "reported", "recorded", "achieved", "实际", "实发", "累计完成", "已完成",
+    "完成", "达到", "实现",
 )
 
 _REGION_WORDS = (
@@ -34,6 +60,7 @@ _REGION_WORDS = (
     "流域", "梯级", "合计", "总计", "全省", "全区", "区域",
 )
 _COMPLEX_WORDS = ("complex", "power base", "电站群", "基地", "枢纽群")
+_GROUP_WORDS = ("group total", "company total", "集团合计", "公司合计", "全公司")
 _PLANT_WORDS = ("station", "plant", "单站", "本站", "该电站", "电站")
 
 
@@ -53,6 +80,14 @@ class ScopeClue:
     matched: str | None = None
 
 
+@dataclass
+class MetricClue:
+    """指标线索；普通“发电量/generation”不足以证明是总发电量。"""
+
+    metric: GenerationMetric = GenerationMetric.UNKNOWN
+    matched: str | None = None
+
+
 def find_years(text: str) -> list[str]:
     """按出现顺序返回去重后的 4 位年份字符串。"""
     seen: list[str] = []
@@ -64,13 +99,33 @@ def find_years(text: str) -> list[str]:
 
 
 def detect_period_type(text: str) -> PeriodType:
-    """据文本判断周期类型：季度 > 财年 > 自然年（默认）。"""
+    """据文本判断周期类型；Promotion 会对目标产品再做严格核验。"""
     t = text or ""
+    if _ROLLING_RE.search(t):
+        return PeriodType.ROLLING_12_MONTHS
+    if _YTD_RE.search(t):
+        return PeriodType.YEAR_TO_DATE
     if _QUARTER_RE.search(t):
         return PeriodType.QUARTER
     if _FISCAL_RE.search(t):
         return PeriodType.FISCAL_YEAR
+    if _MONTH_RE.search(t):
+        return PeriodType.MONTH
     return PeriodType.CALENDAR_YEAR
+
+
+def has_explicit_full_year_clue(text: str) -> bool:
+    """判断文本是否明确说明自然年全年，而不是仅出现一个四位年份。"""
+    return bool(_FULL_YEAR_RE.search(text or ""))
+
+
+def detect_metric_clue(text: str) -> MetricClue:
+    """识别明确指标；没有限定词时返回 UNKNOWN，不把普通发电量猜成总发电量。"""
+    for metric, pattern in _METRIC_PATTERNS:
+        match = pattern.search(text or "")
+        if match:
+            return MetricClue(metric=metric, matched=match.group(0))
+    return MetricClue()
 
 
 def _first_hit(text: str, words: tuple[str, ...]) -> str | None:
@@ -94,6 +149,9 @@ def detect_value_type_clue(text: str) -> ValueTypeClue:
 
 def detect_scope_clue(text: str) -> ScopeClue:
     """识别单站/电站群/区域线索。区域 > 电站群 > 单站（宁可保守判大范围转人工）。"""
+    hit = _first_hit(text, _GROUP_WORDS)
+    if hit:
+        return ScopeClue(scope=MeasurementScope.GROUP, matched=hit)
     hit = _first_hit(text, _REGION_WORDS)
     if hit:
         return ScopeClue(scope=MeasurementScope.REGION, matched=hit)

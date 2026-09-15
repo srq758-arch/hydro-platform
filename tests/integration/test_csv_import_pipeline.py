@@ -3,6 +3,21 @@
 from hydro_platform.app.api import Api
 
 
+def test_csv_import_rejects_missing_business_semantics(monkeypatch, tmp_path):
+    monkeypatch.setenv("HYDRO_DATA_DIR", str(tmp_path))
+    api = Api(data_mode="test")
+    api.initialize()
+    result = api.import_csv_batch(
+        "entity_id,period_label,generation_gwh\nmissing-contract,2024,12.3\n"
+    )
+    assert result["success"] is False
+    assert "metric" in result["errors"][0]
+    conn = api.get_db_connection()
+    assert conn.execute("SELECT COUNT(*) FROM extraction_candidates").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM generation_records").fetchone()[0] == 0
+    conn.close()
+
+
 def test_csv_import_queues_candidates_without_publishing(monkeypatch, tmp_path):
     monkeypatch.setenv("HYDRO_DATA_DIR", str(tmp_path))
     api = Api(data_mode="test")
@@ -16,11 +31,11 @@ def test_csv_import_queues_candidates_without_publishing(monkeypatch, tmp_path):
     conn.close()
 
     csv_content = (
-        "entity_id,period_label,generation_gwh,canonical_name,unit_raw,period_type,value_type,measurement_scope\n"
-        "csv-station,2024,123.4,CSV Station,GWh,calendar_year,actual,plant\n"
-        "unknown-station,2024,nope,Unknown,GWh,calendar_year,actual,plant\n"
-        "csv-station,2023,10,CSV Station,MW,calendar_year,actual,plant\n"
-        "csv-station,2022,5,CSV Station,GWh,calendar_year,forecast,plant\n"
+        "entity_id,period_label,generation_gwh,canonical_name,unit_raw,period_type,metric,value_type,measurement_scope\n"
+        "csv-station,2024,123.4,CSV Station,GWh,calendar_year,gross_generation,actual,plant\n"
+        "unknown-station,2024,nope,Unknown,GWh,calendar_year,gross_generation,actual,plant\n"
+        "csv-station,2023,10,CSV Station,MW,calendar_year,gross_generation,actual,plant\n"
+        "csv-station,2022,5,CSV Station,GWh,calendar_year,gross_generation,forecast,plant\n"
     )
     result = api.import_csv_batch(csv_content)
 
@@ -57,7 +72,7 @@ def test_csv_import_is_idempotent_for_same_content(monkeypatch, tmp_path):
     conn.commit()
     conn.close()
 
-    csv_content = "entity_id,period_label,generation_gwh\ncsv-station,2024,123.4\n"
+    csv_content = "entity_id,period_label,period_type,metric,generation_gwh,unit_raw,value_type,measurement_scope\ncsv-station,2024,calendar_year,gross_generation,123.4,GWh,actual,plant\n"
     first = api.import_csv_batch(csv_content)
     second = api.import_csv_batch(csv_content)
     assert first["details"][0]["candidate_id"] == second["details"][0]["candidate_id"]
@@ -87,9 +102,9 @@ def test_csv_review_approve_and_reject_complete_auditable_task_runs(monkeypatch,
     conn.close()
 
     result = api.import_csv_batch(
-        "entity_id,period_label,generation_gwh\n"
-        "csv-approve,2024,123.4\n"
-        "csv-reject,2024,88.8\n"
+        "entity_id,period_label,period_type,metric,generation_gwh,unit_raw,value_type,measurement_scope\n"
+        "csv-approve,2024,calendar_year,gross_generation,123.4,GWh,actual,plant\n"
+        "csv-reject,2024,calendar_year,gross_generation,88.8,GWh,actual,plant\n"
     )
     assert result["success"] is True
     approve_review = result["details"][0]["review_id"]
@@ -126,7 +141,7 @@ def test_legacy_csv_review_without_task_is_adopted_on_approval(monkeypatch, tmp_
     conn.commit()
     conn.close()
 
-    imported = api.import_csv_batch("entity_id,period_label,generation_gwh\ncsv-legacy,2024,42\n")
+    imported = api.import_csv_batch("entity_id,period_label,period_type,metric,generation_gwh,unit_raw,value_type,measurement_scope\ncsv-legacy,2024,calendar_year,gross_generation,42,GWh,actual,plant\n")
     review_id = imported["details"][0]["review_id"]
     conn = api.get_db_connection()
     candidate_id = conn.execute(

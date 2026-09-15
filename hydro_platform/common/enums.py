@@ -51,6 +51,25 @@ class PeriodType(StrEnum):
     CALENDAR_YEAR = "calendar_year"
     FISCAL_YEAR = "fiscal_year"
     QUARTER = "quarter"
+    MONTH = "month"
+    YEAR_TO_DATE = "ytd"
+    ROLLING_12_MONTHS = "rolling_12_months"
+
+
+class GenerationMetric(StrEnum):
+    """发电相关指标本体；UNKNOWN 只能停留在候选层。"""
+
+    GROSS_GENERATION = "gross_generation"
+    NET_GENERATION = "net_generation"
+    ENERGY_SENT_OUT = "energy_sent_out"
+    ELECTRICITY_SALES = "electricity_sales"
+    UNKNOWN = "unknown"
+
+
+class NormalizedEnergyUnit(StrEnum):
+    """正式发电量产品的规范单位，原文单位仍由 unit_raw 保存。"""
+
+    GWH = "gwh"
 
 
 class ValueType(StrEnum):
@@ -72,6 +91,7 @@ class MeasurementScope(StrEnum):
 
     PLANT = "plant"
     COMPLEX = "complex"
+    GROUP = "group"
     REGION = "region"
 
 
@@ -115,12 +135,15 @@ class FailureStage(StrEnum):
     SOURCE_NOT_FOUND = "SOURCE_NOT_FOUND"
     SOURCE_BLOCKED = "SOURCE_BLOCKED"
     ACQUISITION_FAILED = "ACQUISITION_FAILED"
+    ARCHIVE_FAILED = "ARCHIVE_FAILED"
     PARSE_FAILED = "PARSE_FAILED"
+    EXTRACTION_FAILED = "EXTRACTION_FAILED"
     EXTRACTION_EMPTY = "EXTRACTION_EMPTY"
     VALIDATION_FAILED = "VALIDATION_FAILED"
     EVIDENCE_INCOMPLETE = "EVIDENCE_INCOMPLETE"
     REVIEW_REJECTED = "REVIEW_REJECTED"
     DATABASE_WRITE_FAILED = "DATABASE_WRITE_FAILED"
+    UNKNOWN = "UNKNOWN"
 
 
 class AccessMethod(StrEnum):
@@ -164,3 +187,49 @@ class AcquisitionErrorCode(StrEnum):
     BROWSER_LAUNCH_FAILED = "BROWSER_LAUNCH_FAILED"
     BROWSER_NAVIGATION_FAILED = "BROWSER_NAVIGATION_FAILED"
     BROWSER_DOWNLOAD_FAILED = "BROWSER_DOWNLOAD_FAILED"
+
+
+class SearchLeadStatus(StrEnum):
+    """搜索提供方原始线索的归一化进度。"""
+
+    DISCOVERED = "discovered"
+    NORMALIZED = "normalized"
+    REJECTED = "rejected"
+
+
+class CandidateSourceStatus(StrEnum):
+    """可尝试来源在采集队列中的生命周期。"""
+
+    ELIGIBLE = "eligible"
+    QUEUED = "queued"
+    SUCCEEDED = "succeeded"
+    EXHAUSTED = "exhausted"
+    CANCELLED = "cancelled"
+    REJECTED = "rejected"
+
+
+class SourceTerminationCode(StrEnum):
+    """多来源队列未获得合格结果时的明确终止原因。"""
+
+    NO_QUALIFIED_SOURCE_FOUND = "NO_QUALIFIED_SOURCE_FOUND"
+    NOT_FOUND_WITHIN_SEARCH_BUDGET = "NOT_FOUND_WITHIN_SEARCH_BUDGET"
+
+
+class SourceAttemptStatus(StrEnum):
+    """单个候选来源的一次采集尝试状态。"""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class EvidenceCandidateStatus(StrEnum):
+    """证据候选状态；PROMOTED 仍需通过正式 Promotion gates。"""
+
+    EXTRACTED = "extracted"
+    VALIDATED = "validated"
+    NEEDS_REVIEW = "needs_review"
+    REJECTED = "rejected"
+    PROMOTED = "promoted"

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ...common.enums import MeasurementScope, PeriodType, ValueType
+from ...common.enums import GenerationMetric, MeasurementScope, NormalizedEnergyUnit, PeriodType, ValueType
+from ...extraction.patterns import has_explicit_full_year_clue
+from ...extraction.units import parse_unit
 from ...models.candidate import ExtractionCandidate
 
 LLM_EXTRACTOR_VERSION = "llm-v1"
@@ -22,6 +24,8 @@ class LLMCandidate(BaseModel):
     period_label: str | None = None
     period_type: PeriodType | None = None
     generation_gwh: float | None = None
+    metric: GenerationMetric | None = None
+    normalized_unit: NormalizedEnergyUnit | None = None
     value_type: ValueType | None = None
     measurement_scope: MeasurementScope | None = None
     value_raw: str | None = None
@@ -48,13 +52,28 @@ class LLMCandidate(BaseModel):
         flags = ["LLM_SOURCED"]
         if self.value_type == ValueType.FORECAST:
             flags.append("FORECAST_SUSPECT")
-        if self.measurement_scope in (MeasurementScope.REGION, MeasurementScope.COMPLEX):
+        if self.measurement_scope in (MeasurementScope.REGION, MeasurementScope.COMPLEX, MeasurementScope.GROUP):
             flags.append("SCOPE_NOT_PLANT")
+        if self.metric in (None, GenerationMetric.UNKNOWN):
+            flags.append("METRIC_UNCLEAR")
+        unit = parse_unit(self.unit_raw)
+        if unit.is_power:
+            flags.extend(["UNIT_NOT_ENERGY", "CAPACITY_SUSPECT"])
+        elif not unit.is_energy:
+            flags.append("UNIT_UNCLEAR")
+        if (
+            self.period_type == PeriodType.CALENDAR_YEAR
+            and self.period_label
+            and not has_explicit_full_year_clue(self.snippet or "")
+        ):
+            flags.append("PERIOD_UNCLEAR")
         return ExtractionCandidate(
             entity_id=entity_id,
             period_type=self.period_type,
             period_label=self.period_label,
             generation_gwh=self.generation_gwh,
+            metric=self.metric,
+            normalized_unit=self.normalized_unit,
             value_type=self.value_type,
             measurement_scope=self.measurement_scope,
             value_raw=self.value_raw,

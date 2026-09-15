@@ -6,8 +6,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+
+import pytest
+
 from hydro_platform.common.enums import (
+    GenerationMetric,
     MeasurementScope,
+    NormalizedEnergyUnit,
     PeriodType,
     ReviewDecision,
     ValueType,
@@ -17,7 +24,9 @@ from hydro_platform.evidence import EvidenceStore, build_evidence_for_candidate
 from hydro_platform.models.candidate import ExtractionCandidate
 from hydro_platform.models.evidence import Evidence, make_generation_fact_key
 from hydro_platform.review import ReviewQueue, needs_review
+from hydro_platform.database.repositories import ReviewTransitionError
 from hydro_platform.validation import validate_candidate
+from hydro_platform.pipeline.candidate_evidence_binding import create_candidate_with_evidence
 
 
 def _seed_document(db, document_id: str, content_hash: str) -> None:
@@ -36,6 +45,9 @@ def _cand(**over) -> ExtractionCandidate:
         period_type=PeriodType.CALENDAR_YEAR,
         period_label="2023",
         generation_gwh=100.0,
+        metric=GenerationMetric.GROSS_GENERATION,
+        normalized_unit=NormalizedEnergyUnit.GWH,
+        unit_raw="GWh",
         value_type=ValueType.ACTUAL,
         measurement_scope=MeasurementScope.PLANT,
         snippet="2023 年发电量 100 GWh",
@@ -47,6 +59,48 @@ def _cand(**over) -> ExtractionCandidate:
     )
     base.update(over)
     return ExtractionCandidate(**base)
+
+
+def _persist_review_candidate(db, cand: ExtractionCandidate) -> list[str]:
+    """Persist the same Candidate→Evidence→Document chain used in production."""
+    db.execute(
+        "INSERT OR IGNORE INTO stations (entity_id, canonical_name, country) VALUES (?, ?, ?)",
+        (cand.entity_id, "Evidence Queue Test Station", "Test"),
+    )
+    canonical = json.dumps(
+        cand.model_dump(mode="json", exclude={"candidate_id"}),
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    suffix = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    document_id = f"doc_{suffix}"
+    content_hash = f"hash_{suffix}"
+    _seed_document(db, document_id, content_hash)
+    evidence_id = EvidenceStore(db).save_for_candidate(
+        cand,
+        document_id=document_id,
+        content_hash=content_hash,
+        source_url="http://x/doc",
+    )
+    cand.candidate_id = f"cand_{suffix}"
+    create_candidate_with_evidence(
+        conn=db,
+        candidate_id=cand.candidate_id,
+        task_id=cand.task_id,
+        entity_id=cand.entity_id,
+        document_id=document_id,
+        evidence_ids=[evidence_id],
+        period_type=cand.period_type,
+        period_label=cand.period_label,
+        value_type=cand.value_type,
+        measurement_scope=cand.measurement_scope,
+        generation_gwh=cand.generation_gwh,
+        value_raw=cand.value_raw,
+        unit_raw=cand.unit_raw,
+        snippet=cand.snippet,
+        extraction_method=cand.extractor,
+    )
+    return [evidence_id]
 
 
 # ---- Evidence ----
@@ -82,6 +136,22 @@ def test_build_evidence_carries_locator_and_versions():
     assert ev.locator == "p1"
     assert ev.extraction_version == "rule-v1"
     assert ev.parser_version == "parse-v1"
+
+
+def test_build_evidence_infers_page_and_table_from_structured_locator():
+    cand = _cand()
+    cand.locator = "page[2].table[1].row[3].col[4]"
+    ev = build_evidence_for_candidate(cand, content_hash="h1")
+    assert ev.page_number == 2
+    assert ev.table_reference == "table[1].row[3].col[4]"
+
+
+def test_build_evidence_infers_ocr_page_from_locator():
+    cand = _cand()
+    cand.locator = "page[7].ocr"
+    ev = build_evidence_for_candidate(cand, content_hash="h1")
+    assert ev.page_number == 7
+    assert ev.table_reference is None
 
 
 def test_evidence_store_is_idempotent(db):
@@ -143,6 +213,14 @@ def test_top100_always_needs_review():
     assert needs_review(cand, res, is_top100=True)
 
 
+def test_ocr_derived_candidate_always_needs_review():
+    cand = _cand()
+    cand.flags.append("OCR_DERIVED")
+    res = validate_candidate(cand)
+    assert res.passed
+    assert needs_review(cand, res)
+
+
 # ---- ReviewQueue ----
 
 def test_clean_candidate_not_enqueued(db):
@@ -157,19 +235,43 @@ def test_flagged_candidate_enqueued(db):
     q = ReviewQueue(db)
     cand = _cand(value_type=ValueType.FORECAST)
     res = validate_candidate(cand)
-    rid = q.submit(cand, res, evidence_ids=["ev_1"])
+    evidence_ids = _persist_review_candidate(db, cand)
+    rid = q.submit(cand, res, evidence_ids=evidence_ids)
     assert rid is not None
     assert q.repo.count(status="open") == 1
     row = q.repo.get(rid)
     assert "ACTUAL_FORECAST_MIXED" in row["reason"]
 
 
+def test_review_payload_preserves_evidence_metadata(db):
+    q = ReviewQueue(db)
+    cand = _cand(value_type=ValueType.FORECAST)
+    res = validate_candidate(cand)
+    evidence_ids = _persist_review_candidate(db, cand)
+    rid = q.submit(
+        cand,
+        res,
+        evidence_ids=evidence_ids,
+        evidence_metadata={
+            "ocr": {
+                "page_number": 2,
+                "engine": "fake-ocr",
+                "source_image_sha256": "abc123",
+            }
+        },
+    )
+    payload = json.loads(q.repo.get(rid)["payload"])
+    assert payload["evidence_metadata"]["ocr"]["page_number"] == 2
+    assert payload["evidence_metadata"]["ocr"]["engine"] == "fake-ocr"
+
+
 def test_enqueue_is_idempotent_per_fact(db):
     q = ReviewQueue(db)
     cand = _cand(value_type=ValueType.FORECAST)
     res = validate_candidate(cand)
-    r1 = q.submit(cand, res)
-    r2 = q.submit(cand, res)
+    evidence_ids = _persist_review_candidate(db, cand)
+    r1 = q.submit(cand, res, evidence_ids=evidence_ids)
+    r2 = q.submit(cand, res, evidence_ids=evidence_ids)
     assert r1 == r2
     assert q.repo.count() == 1
 
@@ -178,7 +280,8 @@ def test_decision_recorded_and_approved(db):
     q = ReviewQueue(db)
     cand = _cand(value_type=ValueType.FORECAST)
     res = validate_candidate(cand)
-    rid = q.submit(cand, res)
+    evidence_ids = _persist_review_candidate(db, cand)
+    rid = q.submit(cand, res, evidence_ids=evidence_ids)
     q.decide(rid, ReviewDecision.APPROVE, reviewer="alice")
     assert q.is_approved(rid)
     row = q.repo.get(rid)
@@ -186,11 +289,25 @@ def test_decision_recorded_and_approved(db):
     assert row["resolved_at"] is not None
 
 
+def test_review_decision_cannot_be_repeated(db):
+    q = ReviewQueue(db)
+    cand = _cand(value_type=ValueType.FORECAST)
+    res = validate_candidate(cand)
+    evidence_ids = _persist_review_candidate(db, cand)
+    rid = q.submit(cand, res, evidence_ids=evidence_ids)
+    q.decide(rid, ReviewDecision.APPROVE, reviewer="alice")
+
+    with pytest.raises(ReviewTransitionError, match="非法复核状态转换"):
+        q.decide(rid, ReviewDecision.REJECT, reviewer="bob")
+    assert q.repo.get(rid)["status"] == "approve"
+
+
 def test_reject_is_not_approved(db):
     q = ReviewQueue(db)
     cand = _cand(measurement_scope=MeasurementScope.REGION)
     res = validate_candidate(cand)
-    rid = q.submit(cand, res)
+    evidence_ids = _persist_review_candidate(db, cand)
+    rid = q.submit(cand, res, evidence_ids=evidence_ids)
     q.decide(rid, ReviewDecision.REJECT, reviewer="bob")
     assert not q.is_approved(rid)
 
@@ -199,7 +316,8 @@ def test_top100_clean_candidate_enqueued(db):
     q = ReviewQueue(db)
     cand = _cand()
     res = validate_candidate(cand)
-    rid = q.submit(cand, res, is_top100=True)
+    evidence_ids = _persist_review_candidate(db, cand)
+    rid = q.submit(cand, res, evidence_ids=evidence_ids, is_top100=True)
     assert rid is not None
     row = q.repo.get(rid)
     assert "TOP100" in row["reason"] or row["reason"] == "REVIEW_REQUIRED"

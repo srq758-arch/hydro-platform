@@ -47,14 +47,24 @@ def test_db(tmp_path):
         'src_test', 'http://test.com', 'Test Source', 'Test Publisher'
     ))
 
+    conn.execute("""
+        INSERT INTO documents (
+            document_id, source_id, original_url, file_size, content_hash,
+            local_path, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        'doc_001', 'src_test', 'http://test.com/report', 100, 'hash_001',
+        '/tmp/report.html', now_iso()
+    ))
+
     # 插入测试证据（用于满足外键约束）
     conn.execute("""
         INSERT INTO evidence (
-            evidence_id, source_id, fact_type, fact_key,
+            evidence_id, source_id, document_id, content_hash, fact_type, fact_key,
             source_url, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        'evi_001', 'src_test', 'generation', 'test_fact',
+        'evi_001', 'src_test', 'doc_001', 'hash_001', 'generation', 'test_fact',
         'http://test.com', now_iso()
     ))
 
@@ -250,18 +260,38 @@ class TestD04TrustworthyFilter:
         """测试过滤器接受合格数据。"""
         conn = test_db
 
-        # 插入完全合格的数据
+        # 插入完整 Candidate→Evidence→Document 链以及正式记录。
+        conn.execute("""
+            INSERT INTO extraction_candidates (
+                candidate_id, entity_id, document_id, period_type, period_label,
+                value_type, measurement_scope, generation_gwh, extracted_at,
+                review_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            'cand_valid', 'sta_test_01', 'doc_001', 'calendar_year', '2023',
+            'actual', 'plant', 100.0, now_iso(), 'approved'
+        ))
+        conn.execute(
+            "UPDATE extraction_candidates SET metric='gross_generation', normalized_unit='gwh' WHERE candidate_id='cand_valid'"
+        )
+        conn.execute(
+            "INSERT INTO candidate_evidence(candidate_id, evidence_id) VALUES (?, ?)",
+            ('cand_valid', 'evi_001')
+        )
         conn.execute("""
             INSERT INTO generation_records (
                 entity_id, period_label, generation_gwh, value_type,
                 period_type, measurement_scope, validation_status,
-                publication_status, review_status, evidence_id, confidence
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                publication_status, review_status, evidence_id, candidate_id, confidence
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             'sta_test_01', '2023', 100.0, 'actual',
             'calendar_year', 'plant', 'passed',
-            'publishable', 'approved', 'evi_001', 0.9
+            'publishable', 'approved', 'evi_001', 'cand_valid', 0.9
         ))
+        conn.execute(
+            "UPDATE generation_records SET metric='gross_generation', normalized_unit='gwh' WHERE candidate_id='cand_valid'"
+        )
         conn.commit()
 
         results = get_top_n_trustworthy(conn, year='2023', n=100)

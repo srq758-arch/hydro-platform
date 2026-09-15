@@ -12,6 +12,23 @@ from .html_parser import parse_html
 from .json_parser import parse_json
 from .table_parser import parse_csv, parse_excel
 from .pdf_parser import parse_pdf, pdf_available
+from .pdf_renderer import (
+    PdfRenderError,
+    PdfRenderUnavailable,
+    RenderedPdfPage,
+    pdf_render_available,
+    render_pdf_pages,
+)
+from .pdf_ocr import (
+    OcrPageText,
+    OcrRegion,
+    PdfOcrError,
+    PdfOcrUnavailable,
+    PytesseractBackend,
+    ocr_available,
+    ocr_environment_report,
+    ocr_rendered_pages,
+)
 from .dispatcher import parse_document, parse_bytes
 
 __all__ = [
@@ -23,6 +40,19 @@ __all__ = [
     "parse_excel",
     "parse_pdf",
     "pdf_available",
+    "PdfRenderError",
+    "PdfRenderUnavailable",
+    "RenderedPdfPage",
+    "pdf_render_available",
+    "render_pdf_pages",
+    "OcrPageText",
+    "OcrRegion",
+    "PdfOcrError",
+    "PdfOcrUnavailable",
+    "PytesseractBackend",
+    "ocr_available",
+    "ocr_environment_report",
+    "ocr_rendered_pages",
     "parse_document",
     "parse_bytes",
 ]

@@ -12,6 +12,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Optional
 
+from hydro_platform.products.trustworthy_filter import TrustworthyFilter
+
 
 def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
@@ -58,16 +60,14 @@ class ReadQueries:
 
             for station in stations:
                 entity_id = station['entity_id']
-                existing_years = set(
-                    row['period_label'] for row in self.conn.execute(
-                        """
-                        SELECT DISTINCT period_label
-                        FROM generation_records
-                        WHERE entity_id = ? AND publication_status = 'publishable'
-                        """,
-                        (entity_id,)
-                    ).fetchall()
-                )
+                existing_years = {
+                    row["period_label"]
+                    for row in TrustworthyFilter.filter_records(
+                        self.conn,
+                        entity_id=entity_id,
+                        limit=1000,
+                    )
+                }
 
                 # 检测 2015-2024 年的缺口
                 for year in range(2015, 2025):
@@ -81,9 +81,7 @@ class ReadQueries:
             "stations": self._count("stations"),
             "projects": self._count("projects"),
             "documents": self._count("documents"),
-            "accepted_records": self._count(
-                "generation_records", "publication_status = ?", ("publishable",)
-            ),
+            "accepted_records": TrustworthyFilter.count_trustworthy_records(self.conn),
             "data_gaps": high_priority_gaps,
             "pending_reviews": self._count("review_items", "status = ?", ("open",)),
         }
@@ -91,9 +89,7 @@ class ReadQueries:
     def _dashboard_quality(self) -> dict[str, Any]:
         """数据质量概况：按 publication/review 状态分桶（环形图数据）。"""
         total = self._count("generation_records")
-        publishable = self._count(
-            "generation_records", "publication_status = ?", ("publishable",)
-        )
+        publishable = TrustworthyFilter.count_trustworthy_records(self.conn)
         pending = self._count("review_items", "status = ?", ("open",))
         return {
             "total": total,
@@ -147,14 +143,20 @@ class ReadQueries:
 
     def _coverage_by_year(self) -> list[dict[str, Any]]:
         """按年份的已确认记录数（覆盖率柱状图）。"""
+        trusted_where, trusted_params = TrustworthyFilter.get_sql_where_clause(
+            table_alias="g"
+        )
         rows = self.conn.execute(
-            """
-            SELECT period_label AS year, COUNT(*) AS accepted
-            FROM generation_records
-            WHERE publication_status = 'publishable' AND period_type = 'year'
-            GROUP BY period_label
-            ORDER BY period_label
-            """
+            f"""
+            SELECT g.period_label AS year, COUNT(*) AS accepted
+            FROM generation_records g
+            JOIN stations s ON s.entity_id = g.entity_id
+            {TrustworthyFilter.get_sql_join_clause(table_alias="g")}
+            WHERE {trusted_where}
+            GROUP BY g.period_label
+            ORDER BY g.period_label
+            """,
+            trusted_params,
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -314,17 +316,16 @@ class ReadQueries:
         gaps = []
         for station in stations:
             entity_id = station['entity_id']
-            # 检查已有哪些年份
-            existing_years = set(
-                row['period_label'] for row in self.conn.execute(
-                    """
-                    SELECT DISTINCT period_label
-                    FROM generation_records
-                    WHERE entity_id = ? AND publication_status = 'publishable'
-                    """,
-                    (entity_id,)
-                ).fetchall()
-            )
+            # 数据缺口只能由完整可信记录解决；仅标记 publishable、但缺候选/
+            # 证据链或置信度的历史记录仍然是未解决缺口。
+            existing_years = {
+                row["period_label"]
+                for row in TrustworthyFilter.filter_records(
+                    self.conn,
+                    entity_id=entity_id,
+                    limit=1000,
+                )
+            }
 
             # 检测 2015-2024 年的缺口
             for year in range(2015, 2025):
@@ -344,48 +345,57 @@ class ReadQueries:
 
     def get_data_coverage_stats(self) -> dict[str, Any]:
         """数据覆盖率统计：按国家、年份的覆盖情况。"""
+        trusted_where, trusted_params = TrustworthyFilter.get_sql_where_clause(
+            table_alias="g"
+        )
+        trusted_cte = f"""
+            WITH trusted AS (
+                SELECT g.id, g.entity_id, g.period_label
+                FROM generation_records g
+                {TrustworthyFilter.get_sql_join_clause(table_alias="g")}
+                WHERE {trusted_where}
+            )
+        """
         # 按国家统计
         by_country = self.conn.execute(
-            """
+            trusted_cte + """
             SELECT s.country,
                    COUNT(DISTINCT s.entity_id) as total_stations,
-                   COUNT(DISTINCT g.entity_id) as stations_with_data,
-                   COUNT(DISTINCT g.id) as total_records
+                   COUNT(DISTINCT t.entity_id) as stations_with_data,
+                   COUNT(DISTINCT t.id) as total_records
             FROM stations s
-            LEFT JOIN generation_records g ON g.entity_id = s.entity_id
-                AND g.publication_status = 'publishable'
+            LEFT JOIN trusted t ON t.entity_id = s.entity_id
             WHERE s.country IS NOT NULL
             GROUP BY s.country
             ORDER BY total_stations DESC
             LIMIT 20
-            """
+            """,
+            trusted_params,
         ).fetchall()
 
         # 按年份统计
         by_year = self.conn.execute(
-            """
+            trusted_cte + """
             SELECT period_label as year,
                    COUNT(*) as record_count,
                    COUNT(DISTINCT entity_id) as station_count
-            FROM generation_records
-            WHERE publication_status = 'publishable'
-                AND period_type = 'year'
+            FROM trusted
             GROUP BY period_label
             ORDER BY period_label DESC
             LIMIT 15
-            """
+            """,
+            trusted_params,
         ).fetchall()
 
         # 总体统计
         overall = self.conn.execute(
-            """
+            trusted_cte + """
             SELECT
                 (SELECT COUNT(*) FROM stations) as total_stations,
-                (SELECT COUNT(DISTINCT entity_id) FROM generation_records
-                 WHERE publication_status = 'publishable') as stations_with_data,
-                (SELECT COUNT(*) FROM generation_records
-                 WHERE publication_status = 'publishable') as total_records
-            """
+                (SELECT COUNT(DISTINCT entity_id) FROM trusted) as stations_with_data,
+                (SELECT COUNT(*) FROM trusted) as total_records
+            """,
+            trusted_params,
         ).fetchone()
 
         return {
@@ -406,6 +416,25 @@ class ReadQueries:
         offset: int = 0,
     ) -> dict[str, Any]:
         """数据浏览（基线 18.1）：跨电站浏览发电量记录，带筛选。"""
+        if published_only:
+            # “仅已发布”在产品界面中的含义是完整可信记录，而不是仅检查一个
+            # publication_status 字符串。预测值不属于该产品集合。
+            if value_type and value_type != "actual":
+                return {"total": 0, "items": []}
+            total = TrustworthyFilter.count_trustworthy_records(
+                self.conn,
+                entity_id=entity_id,
+                year=year,
+            )
+            items = TrustworthyFilter.filter_records(
+                self.conn,
+                entity_id=entity_id,
+                year=year,
+                limit=limit,
+                offset=offset,
+            )
+            return {"total": total, "items": items}
+
         where: list[str] = []
         params: list[Any] = []
         if entity_id:
@@ -417,9 +446,6 @@ class ReadQueries:
         if value_type:
             where.append("g.value_type = ?")
             params.append(value_type)
-        if published_only:
-            where.append("g.publication_status = 'publishable'")
-
         where_sql = (" WHERE " + " AND ".join(where)) if where else ""
 
         total = int(
@@ -456,10 +482,16 @@ class ReadQueries:
         if not year:
             # 年份必须明确，防止混合不同年份
             # 默认使用最新有数据的年份
+            trusted_where, trusted_params = TrustworthyFilter.get_sql_where_clause(
+                table_alias="g"
+            )
             latest = self.conn.execute(
-                """SELECT DISTINCT period_label FROM generation_records
-                   WHERE publication_status = 'publishable'
-                   ORDER BY period_label DESC LIMIT 1"""
+                f"""SELECT DISTINCT g.period_label
+                    FROM generation_records g
+                    {TrustworthyFilter.get_sql_join_clause(table_alias="g")}
+                    WHERE {trusted_where}
+                    ORDER BY g.period_label DESC LIMIT 1""",
+                trusted_params,
             ).fetchone()
             if not latest:
                 return []
@@ -594,7 +626,9 @@ class ReadQueries:
                 evidence = self.conn.execute(
                     """
                     SELECT e.*, d.local_path AS document_path,
-                           src.title AS source_title, src.url AS source_url
+                           d.content_type AS content_type,
+                           src.title AS source_title, src.url AS source_url,
+                           src.publisher AS publisher, src.publish_date AS publish_date
                     FROM candidate_evidence ce
                     JOIN evidence e ON e.evidence_id = ce.evidence_id
                     LEFT JOIN documents d ON d.document_id = e.document_id
@@ -605,13 +639,31 @@ class ReadQueries:
                     (candidate["candidate_id"],),
                 ).fetchall()
                 result["evidences"] = [dict(row) for row in evidence]
+                # 新复核契约以 review_id 为入口，前端仍需要一个稳定的“主证据”
+                # 展示字段。只映射数据库已有的首条证据，不拼接或猜测定位信息。
+                if evidence:
+                    primary = dict(evidence[0])
+                    for field in (
+                        "snippet", "page_number", "table_reference", "locator",
+                        "confidence", "source_title", "source_url", "publisher",
+                        "publish_date", "document_path", "content_type",
+                    ):
+                        if primary.get(field) is not None:
+                            result[field] = primary[field]
                 if review["payload"]:
                     try:
-                        result["validation_issues"] = json.loads(review["payload"]).get(
-                            "validation_issues", []
+                        payload = json.loads(review["payload"])
+                        result["validation_issues"] = payload.get("validation_issues", [])
+                        result["candidate_flags"] = (
+                            payload.get("candidate", {}).get("flags", []) or []
                         )
+                        result["evidence_metadata"] = payload.get(
+                            "evidence_metadata", {}
+                        ) or {}
                     except (TypeError, ValueError, json.JSONDecodeError):
                         pass
+                result.setdefault("candidate_flags", [])
+                result.setdefault("evidence_metadata", {})
                 station = self.conn.execute(
                     "SELECT canonical_name, country, capacity_mw FROM stations WHERE entity_id = ?",
                     (candidate["entity_id"],),

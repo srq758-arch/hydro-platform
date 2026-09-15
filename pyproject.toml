@@ -28,6 +28,12 @@ parsing = [
     "pypdf>=4.0",
     "openpyxl>=3.1",
 ]
+# OCR/扫描 PDF 可选依赖：实际识别仍受本机 Tesseract 二进制与语言包影响。
+ocr = [
+    "PyMuPDF>=1.23",
+    "Pillow>=10.0",
+    "pytesseract>=0.3.10",
+]
 # 浏览器访问可选依赖（步骤 6）：未安装时路由回退不可用。
 browser = [
     "playwright>=1.40",

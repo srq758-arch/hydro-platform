@@ -51,3 +51,21 @@ def test_station_details_use_unified_trusted_source_discovery_not_gem_only_looku
     assert "onclick=\"discoverTrustedSources(" in source
     assert "api().discover_trusted_sources(entityId, year, 10)" in source
     assert "function discoverOfficialSources(" not in source
+
+
+def test_discovery_dialog_separates_qualified_review_and_excluded_items():
+    source = (ROOT / "hydro_platform" / "app" / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "const excludedItems = result.excluded_items || [];" in source
+    assert "const excludedRows = excludedItems.map(item =>" in source
+    assert "excludedItems.length" in source
+    assert "canOpen ?" in source
+
+
+def test_discovery_dialog_explains_provider_budget_and_cost_diagnostics():
+    source = (ROOT / "hydro_platform" / "app" / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "速率受限" in source
+    assert "预算耗尽" in source
+    assert "已熔断" in source
+    assert "估算成本" in source

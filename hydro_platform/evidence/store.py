@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import sqlite3
+import re
 
 from ..database.repositories import EvidenceRepository
 from ..models.candidate import ExtractionCandidate
@@ -15,6 +16,38 @@ from ..models.evidence import (
     Evidence,
     make_generation_fact_key,
 )
+
+
+_PAGE_LOCATOR_RE = re.compile(r"(?:^|[.\s])page\[(\d+)\](?:\.|$)", re.IGNORECASE)
+_TABLE_LOCATOR_RE = re.compile(
+    r"table\[\d+\](?:\.row\[\d+\])?(?:\.col\[\d+\])?",
+    re.IGNORECASE,
+)
+
+
+def _infer_locator_metadata(
+    locator: str | None,
+    *,
+    page_number: int | None,
+    table_reference: str | None,
+) -> tuple[int | None, str | None]:
+    """从结构化 locator 补全可验证的页码/表格坐标。
+
+    抽取器已经把定位写入 ``page[n].ocr`` 或
+    ``page[n].table[m].row[r].col[c]``。证据层不应丢掉这类信息，
+    但只在格式明确时补全，避免把自然语言片段误判为页码。
+    """
+    if not locator:
+        return page_number, table_reference
+    if page_number is None:
+        match = _PAGE_LOCATOR_RE.search(locator)
+        if match:
+            page_number = int(match.group(1))
+    if table_reference is None:
+        match = _TABLE_LOCATOR_RE.search(locator)
+        if match:
+            table_reference = match.group(0)
+    return page_number, table_reference
 
 
 def build_evidence_for_candidate(
@@ -30,12 +63,18 @@ def build_evidence_for_candidate(
     parser_version: str | None = None,
 ) -> Evidence:
     """由候选构造一条证据。定位信息（页码/表格）能拿到多少填多少，绝不编造。"""
+    page_number, table_reference = _infer_locator_metadata(
+        cand.locator,
+        page_number=page_number,
+        table_reference=table_reference,
+    )
     fact_key = make_generation_fact_key(
         entity_id=cand.entity_id,
         period_type=cand.period_type,
         period_label=cand.period_label,
         value_type=cand.value_type,
         measurement_scope=cand.measurement_scope,
+        metric=cand.metric,
     )
     evidence_id = Evidence.derive_id(
         fact_type=FACT_TYPE_GENERATION, fact_key=fact_key, content_hash=content_hash

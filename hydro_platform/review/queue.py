@@ -16,7 +16,7 @@ from ..common.result import ValidationResult
 from ..database.repositories import ReviewRepository
 from ..models.candidate import ExtractionCandidate
 from ..models.evidence import FACT_TYPE_GENERATION, make_generation_fact_key
-from ..pipeline.approval_versioning import compute_candidate_hash
+from ..pipeline.approval_versioning import compute_persisted_candidate_hash
 
 # 触发复核的问题码（除「整体未通过/高危」外的显式清单，便于测试与审计）
 _REVIEW_TRIGGER_CODES = frozenset(
@@ -25,6 +25,7 @@ _REVIEW_TRIGGER_CODES = frozenset(
         "ENTITY_AMBIGUOUS",
         "UNIT_UNCLEAR",
         "YEAR_MISMATCH",
+        "PERIOD_AMBIGUOUS",
         "ACTUAL_FORECAST_MIXED",
         "CAPACITY_GENERATION_CONFLICT",
         "DUPLICATE_RECORD",
@@ -39,6 +40,9 @@ def needs_review(
     is_top100: bool = False,
 ) -> bool:
     """判定候选是否必须进复核（文档 15）。"""
+    # OCR 文本可能存在字符、数字或表格列错位，即使规则校验通过也不能自动发布。
+    if "OCR_DERIVED" in cand.flags:
+        return True
     if is_top100:
         return True
     if not result.passed:
@@ -78,6 +82,7 @@ class ReviewQueue:
         *,
         evidence_ids: list[str] | None = None,
         is_top100: bool = False,
+        evidence_metadata: dict | None = None,
     ) -> str | None:
         """若需复核则入队，返回 review_id；不需复核返回 None。"""
         if not needs_review(cand, result, is_top100=is_top100):
@@ -98,14 +103,13 @@ class ReviewQueue:
             reason = f"CONFLICT_CANDIDATE; {reason}"
 
         # D07: 计算候选哈希（防止旧审批复用）
-        candidate_hash = compute_candidate_hash({
-            'entity_id': cand.entity_id,
-            'period_label': cand.period_label,
-            'generation_gwh': cand.generation_gwh,
-            'value_type': cand.value_type,
-            'source_id': cand.source_id,
-            'evidence_id': evidence_ids[0] if evidence_ids else None
-        })
+        if not cand.candidate_id:
+            raise ValueError("复核入队前必须先持久化候选")
+        candidate_hash = compute_persisted_candidate_hash(
+            self.repo.conn,
+            cand.candidate_id,
+            expected_evidence_ids=evidence_ids,
+        )
 
         payload = json.dumps(
             {
@@ -115,6 +119,7 @@ class ReviewQueue:
                     for i in result.issues
                 ],
                 "evidence_ids": evidence_ids or [],
+                "evidence_metadata": evidence_metadata or {},
                 "is_top100": is_top100,
                 "candidate_hash": candidate_hash,  # D07: 候选内容哈希
             },

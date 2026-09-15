@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from hydro_platform.app.api import Api
 from hydro_platform.common.enums import TaskStatus
+from hydro_platform.intelligence.source_discovery_service import TaskSourceDiscoveryAdapter
 from hydro_platform.pipeline.result import PipelineResult
 
 
@@ -38,6 +39,6 @@ def test_scheduled_task_builds_automatic_discovery_context(tmp_path, monkeypatch
     assert result["status"] == "success"
     assert result["task_id"] == "scheduled_task"
     assert observed["task_id"] == "scheduled_task"
-    assert observed["resolver"] is not None
+    assert isinstance(observed["resolver"], TaskSourceDiscoveryAdapter)
     assert observed["controlled_refs"] == []
     assert build_router.called

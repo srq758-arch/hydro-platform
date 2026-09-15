@@ -28,7 +28,12 @@ def setup_test_data(conn):
     """创建测试数据"""
     # 清理可能存在的测试数据（外键约束下的正确顺序）
     conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("DELETE FROM candidate_evidence WHERE candidate_id LIKE 'candidate_sta_%'")
     conn.execute("DELETE FROM generation_records WHERE entity_id LIKE 'sta_%'")
+    conn.execute("DELETE FROM evidence WHERE evidence_id LIKE 'evidence_sta_%'")
+    conn.execute("DELETE FROM extraction_candidates WHERE candidate_id LIKE 'candidate_sta_%'")
+    conn.execute("DELETE FROM documents WHERE document_id LIKE 'document_sta_%'")
+    conn.execute("DELETE FROM sources WHERE source_id LIKE 'source_sta_%'")
     conn.execute("DELETE FROM stations WHERE entity_id LIKE 'sta_%'")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.commit()
@@ -61,20 +66,72 @@ def setup_test_data(conn):
     ]
 
     for entity_id, period_label, generation in records:
+        source_id = f'source_{entity_id}'
+        document_id = f'document_{entity_id}'
+        candidate_id = f'candidate_{entity_id}'
+        evidence_id = f'evidence_{entity_id}'
+        content_hash = f'hash_{entity_id}'
+        source_url = f'https://example.test/{entity_id}/2023'
+
+        conn.execute(
+            "INSERT INTO sources (source_id, url, title) VALUES (?, ?, ?)",
+            (source_id, source_url, f'{entity_id} annual disclosure'),
+        )
+        conn.execute(
+            """INSERT INTO documents
+               (document_id, source_id, original_url, file_size, content_hash,
+                local_path, content_kind, created_at)
+               VALUES (?, ?, ?, 100, ?, ?, 'html', datetime('now'))""",
+            (document_id, source_id, source_url, content_hash, f'/tmp/{entity_id}.html'),
+        )
+        conn.execute(
+            """INSERT INTO extraction_candidates
+               (candidate_id, entity_id, document_id, period_type, period_label,
+                value_type, measurement_scope, generation_gwh, extracted_at)
+               VALUES (?, ?, ?, 'calendar_year', ?, 'actual', 'plant', ?,
+                       datetime('now'))""",
+            (candidate_id, entity_id, document_id, period_label, generation),
+        )
+        conn.execute(
+            "UPDATE extraction_candidates SET metric='gross_generation', normalized_unit='gwh' WHERE candidate_id=?",
+            (candidate_id,),
+        )
+        conn.execute(
+            """INSERT INTO evidence
+               (evidence_id, source_id, document_id, content_hash, fact_type,
+                fact_key, snippet, confidence, created_at)
+               VALUES (?, ?, ?, ?, 'generation', ?, ?, .9, datetime('now'))""",
+            (
+                evidence_id,
+                source_id,
+                document_id,
+                content_hash,
+                f'{entity_id}:{period_label}',
+                f'{period_label} annual generation {generation} GWh',
+            ),
+        )
+        conn.execute(
+            "INSERT INTO candidate_evidence (candidate_id, evidence_id) VALUES (?, ?)",
+            (candidate_id, evidence_id),
+        )
         conn.execute("""
             INSERT INTO generation_records (
                 entity_id, period_label, generation_gwh, unit_raw,
                 period_type, value_type, measurement_scope,
                 review_status, publication_status, validation_status,
-                evidence_id, created_at
+                evidence_id, candidate_id, confidence, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         """, (
             entity_id, period_label, generation, 'GWh',
             'calendar_year', 'actual', 'plant',
             'approved', 'publishable', 'passed',
-            f'evidence_{entity_id}'
+            evidence_id, candidate_id, 0.9
         ))
+        conn.execute(
+            "UPDATE generation_records SET metric='gross_generation', normalized_unit='gwh' WHERE entity_id=? AND period_label=?",
+            (entity_id, period_label),
+        )
 
     conn.commit()
 
@@ -263,10 +320,10 @@ def test_markdown_export(test_db):
 
     # 清理
     temp_path.unlink()
-        # 测试通过
 
-    def test_config(test_db):
-        """测试配置"""
+
+def test_config():
+    """测试配置。"""
     print("\n=== 测试 8: 配置 ===")
 
     default_limit = RankingConfig.get_default_limit()
@@ -277,53 +334,3 @@ def test_markdown_export(test_db):
     print(f"  默认限制: {default_limit}")
     print(f"  支持的统计口径: {', '.join(period_types)}")
     print(f"  默认输出目录: {output_dir}")
-
-    return True
-
-
-def main():
-    print("=" * 60)
-    print("任务 5.1: Generation Ranking（Top 100 计算）测试")
-    print("=" * 60)
-
-    results = []
-
-    # 运行测试
-    results.append(("基础排名计算", test_basic_ranking()))
-    results.append(("国家过滤", test_country_filtering()))
-    results.append(("按国家分组排名", test_ranking_by_country()))
-    results.append(("统计信息", test_statistics()))
-    results.append(("CSV导出", test_csv_export()))
-    results.append(("JSON导出", test_json_export()))
-    results.append(("Markdown报告", test_markdown_export()))
-    results.append(("配置", test_config()))
-
-    # 总结
-    print("\n" + "=" * 60)
-    print("测试总结")
-    print("=" * 60)
-
-    passed = sum(1 for _, result in results if result)
-    total = len(results)
-
-    for name, result in results:
-        status = "[OK] 通过" if result else "[FAIL] 失败"
-    print(f"{status}: {name}")
-
-    print(f"\n总计: {passed}/{total} 测试通过")
-
-    if passed == total:
-        print("\n[OK] 任务 5.1 Generation Ranking 实现完成")
-        print("\n功能说明:")
-        print("  - 计算年度发电量 Top N 排名")
-        print("  - 支持国家过滤和分组")
-        print("  - 提供统计信息（总量、平均值等）")
-        print("  - 导出为 CSV、JSON、Markdown 格式")
-        return 0
-    else:
-        print(f"\n[FAIL] {total - passed} 个测试失败")
-        return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())

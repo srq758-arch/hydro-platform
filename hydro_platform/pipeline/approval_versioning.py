@@ -15,9 +15,34 @@ import hashlib
 import json
 import logging
 import sqlite3
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Iterable
 
 logger = logging.getLogger(__name__)
+
+
+_CANDIDATE_HASH_FIELDS = (
+    "entity_id",
+    "period_type",
+    "period_label",
+    "generation_gwh",
+    "value_type",
+    "measurement_scope",
+    "metric",
+    "normalized_unit",
+    "value_raw",
+    "unit_raw",
+    "snippet",
+    "locator",
+    "extractor",
+    "extraction_method",
+    "source_id",
+    "document_id",
+)
+
+
+def _json_value(value: Any) -> Any:
+    """Return a stable JSON value for Pydantic enums and ordinary scalars."""
+    return value.value if hasattr(value, "value") else value
 
 
 def compute_candidate_hash(candidate_data: Dict[str, Any]) -> str:
@@ -29,26 +54,105 @@ def compute_candidate_hash(candidate_data: Dict[str, Any]) -> str:
     Returns:
         SHA256 哈希值（16进制字符串）
     """
-    # 提取关键字段用于哈希计算
-    # 排除不影响数据本质的字段（如创建时间、ID等）
+    # 审批必须绑定完整事实语义以及证据/文档版本。时间戳和数据库行号等
+    # 非业务字段不参与哈希，避免无意义的审批失效。
     key_fields = {
-        'entity_id': candidate_data.get('entity_id'),
-        'period_label': candidate_data.get('period_label'),
-        'generation_gwh': candidate_data.get('generation_gwh'),
-        'value_type': candidate_data.get('value_type'),
-        'source_id': candidate_data.get('source_id'),
-        'evidence_id': candidate_data.get('evidence_id'),
-        # 可以添加其他关键字段
+        field: _json_value(candidate_data.get(field))
+        for field in _CANDIDATE_HASH_FIELDS
+        if candidate_data.get(field) is not None
     }
-
-    # 移除 None 值
-    key_fields = {k: v for k, v in key_fields.items() if v is not None}
+    if candidate_data.get("evidence_id") is not None:
+        key_fields["evidence_id"] = candidate_data["evidence_id"]
+    if candidate_data.get("evidence_ids") is not None:
+        key_fields["evidence_ids"] = sorted(candidate_data["evidence_ids"])
+    if candidate_data.get("evidence_versions") is not None:
+        key_fields["evidence_versions"] = sorted(
+            candidate_data["evidence_versions"],
+            key=lambda item: json.dumps(item, sort_keys=True, ensure_ascii=False),
+        )
 
     # 按键排序后序列化（确保哈希稳定）
     canonical_json = json.dumps(key_fields, sort_keys=True, ensure_ascii=False)
 
     # 计算 SHA256 哈希
     return hashlib.sha256(canonical_json.encode('utf-8')).hexdigest()
+
+
+def load_persisted_candidate_approval_data(
+    conn: sqlite3.Connection,
+    candidate_id: str,
+    *,
+    expected_evidence_ids: Iterable[str] | None = None,
+) -> Dict[str, Any]:
+    """Load the immutable candidate/evidence/document chain used by approval.
+
+    The hash is deliberately rebuilt from persisted rows rather than the review
+    payload.  This makes an approval fail closed if a candidate, its evidence,
+    or the archived document version changes after the item entered the queue.
+    """
+    candidate = conn.execute(
+        "SELECT * FROM extraction_candidates WHERE candidate_id = ?",
+        (candidate_id,),
+    ).fetchone()
+    if candidate is None:
+        raise ValueError(f"候选不存在: {candidate_id}")
+
+    data = dict(candidate)
+    expected = sorted(set(expected_evidence_ids or []))
+    linked_rows = conn.execute(
+        """
+        SELECT ce.evidence_id,
+               e.source_id, e.document_id, e.content_hash,
+               e.fact_type, e.fact_key, e.source_url, e.final_url,
+               e.page_number, e.table_reference, e.section_title,
+               e.snippet, e.locator, e.parser_version, e.extraction_version,
+               d.original_url AS document_url,
+               d.content_hash AS document_content_hash,
+               d.version AS document_version
+        FROM candidate_evidence ce
+        LEFT JOIN evidence e ON e.evidence_id = ce.evidence_id
+        LEFT JOIN documents d ON d.document_id = e.document_id
+        WHERE ce.candidate_id = ?
+        ORDER BY ce.evidence_id
+        """,
+        (candidate_id,),
+    ).fetchall()
+    linked_ids = [row["evidence_id"] for row in linked_rows]
+    if not linked_ids:
+        raise ValueError(f"候选未关联证据: {candidate_id}")
+    if expected and linked_ids != expected:
+        raise ValueError(
+            f"候选证据集合与复核载荷不一致: expected={expected}, actual={linked_ids}"
+        )
+
+    evidence_versions = []
+    for row in linked_rows:
+        version = dict(row)
+        if version.get("document_id") is None or version.get("content_hash") is None:
+            raise ValueError(f"证据链不完整: {row['evidence_id']}")
+        if version.get("document_content_hash") != version.get("content_hash"):
+            raise ValueError(f"证据与归档文档内容哈希不一致: {row['evidence_id']}")
+        evidence_versions.append(version)
+
+    data["evidence_ids"] = linked_ids
+    data["evidence_versions"] = evidence_versions
+    return data
+
+
+def compute_persisted_candidate_hash(
+    conn: sqlite3.Connection,
+    candidate_id: str,
+    *,
+    expected_evidence_ids: Iterable[str] | None = None,
+) -> str:
+    """Compute the approval hash from the current persisted evidence chain."""
+    return compute_candidate_hash(
+        load_persisted_candidate_approval_data(
+            conn,
+            candidate_id,
+            expected_evidence_ids=expected_evidence_ids,
+        )
+    )
 
 
 def add_candidate_hash_to_review(
@@ -187,9 +291,6 @@ def invalidate_stale_approvals(
             """, (review['review_id'],))
             invalidated_count += 1
             logger.info(f"审批 {review['review_id']} 因候选变化而失效")
-
-    if invalidated_count > 0:
-        conn.commit()
 
     return invalidated_count
 

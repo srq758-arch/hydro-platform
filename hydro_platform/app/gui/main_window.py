@@ -22,6 +22,7 @@ from hydro_platform.app.api import Api
 from hydro_platform.app.workers.simple_worker import SimpleWorker, WorkerEvent
 from hydro_platform.app.scheduler.task_scheduler import TaskScheduler
 from hydro_platform.config.paths import get_database_path
+from hydro_platform.intelligence.web_search import SearchRuntime
 
 
 def _pipeline_result_for_ui(result: dict) -> dict:
@@ -62,10 +63,16 @@ class HydroPlatformApp:
         self.current_worker: Optional[SimpleWorker] = None
         self._window_ref = None  # 内部使用，不暴露给 pywebview
         self.scheduler: Optional[TaskScheduler] = None  # 任务调度器
+        # 桌面进程级搜索运行时：前台来源发现与后台并发任务共用配额窗口。
+        self._search_runtime = SearchRuntime()
 
     def _get_api(self, data_mode="production"):
         """惰性获取 API；默认生产，测试必须显式选择。"""
-        return Api(data_mode=data_mode or "production")
+        mode = data_mode or "production"
+        return Api(
+            data_mode=mode,
+            search_runtime=(self._search_runtime if mode == "production" else None),
+        )
 
     # ========== 只读产品 API（暴露给前端）==========
     def get_dashboard(self):
@@ -116,6 +123,9 @@ class HydroPlatformApp:
 
     def get_review_detail(self, record_id):
         return self._get_api().get_review_detail(record_id)
+
+    def get_review_ocr_preview(self, review_id, page_number=None, dpi=150):
+        return self._get_api().get_review_ocr_preview(review_id, page_number, dpi)
 
     def approve_record(self, record_id):
         return self._get_api().approve_record(record_id)
@@ -203,6 +213,9 @@ class HydroPlatformApp:
     # ========== 设置 API ==========
     def get_system_info(self):
         return self._get_api().get_system_info()
+
+    def get_ocr_capabilities(self):
+        return self._get_api().get_ocr_capabilities()
 
     def get_data_space_info(self, data_mode="production"):
         return self._get_api(data_mode).get_data_space_info()
@@ -517,7 +530,8 @@ def create_window():
                 print(f"[Scheduler] 开始执行任务: {task_id}")
 
                 # 通过API执行任务
-                api = Api(data_mode="production")
+                runtime = app.scheduler.search_runtime if app.scheduler else app._search_runtime
+                api = Api(data_mode="production", search_runtime=runtime)
                 result = api.execute_scheduled_task(task_id)
 
                 print(f"[Scheduler] 任务完成: {task_id}, 状态={result.get('status')}")
@@ -533,7 +547,8 @@ def create_window():
             db_path=str(db_path),
             task_executor=task_executor_wrapper,
             max_workers=2,        # 最多2个并发任务
-            scan_interval=10      # 每10秒扫描一次
+            scan_interval=10,     # 每10秒扫描一次
+            search_runtime=app._search_runtime,
         )
 
         # 自动启动调度器

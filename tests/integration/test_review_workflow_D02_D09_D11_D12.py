@@ -19,6 +19,7 @@ from hydro_platform.app.queries import ReadQueries
 from hydro_platform.models.task import Task
 from hydro_platform.common.enums import EntityType, TaskType, TaskStatus, FailureStage
 from hydro_platform.common.clock import now_iso
+from hydro_platform.pipeline.approval_versioning import compute_persisted_candidate_hash
 
 
 @pytest.fixture
@@ -100,18 +101,27 @@ def setup_test_data(conn):
     conn.execute("""
         INSERT INTO extraction_candidates
         (candidate_id, task_id, entity_id, document_id, period_type, period_label, value_type,
-         measurement_scope, generation_gwh, value_raw, unit_raw, snippet, extraction_method, extracted_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (candidate_id, task_id, entity_id, document_id, "year", "2024", "actual", "plant",
-          12500.0, "12,500", "GWh", "Annual generation: 12,500 GWh", "auto_search", now_iso()))
+         measurement_scope, metric, normalized_unit, generation_gwh, value_raw, unit_raw,
+         snippet, extraction_method, extracted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (candidate_id, task_id, entity_id, document_id, "calendar_year", "2024", "actual", "plant",
+          "gross_generation", "gwh", 12500.0, "12,500", "GWh",
+          "Annual gross generation: 12,500 GWh", "auto_search", now_iso()))
 
     # 6. 插入 evidence（添加 fact_type 和 fact_key 字段）
     evidence_id = f"evi_{uuid.uuid4().hex[:12]}"
     conn.execute("""
         INSERT INTO evidence
-        (evidence_id, document_id, fact_type, fact_key, snippet, page_number, confidence, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (evidence_id, document_id, "generation", f"{entity_id}:2024:actual", "Annual generation: 12,500 GWh", 5, 0.85, now_iso()))
+        (evidence_id, source_id, document_id, content_hash, fact_type, fact_key,
+         snippet, page_number, confidence, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (evidence_id, source_id, document_id, "hash123", "generation",
+          f"{entity_id}:2024:actual", "Annual generation: 12,500 GWh", 5, 0.85, now_iso()))
+
+    conn.execute("""
+        INSERT INTO candidate_evidence (candidate_id, evidence_id)
+        VALUES (?, ?)
+    """, (candidate_id, evidence_id))
 
     # 7. 插入 generation_records（draft状态）
     conn.execute("""
@@ -124,6 +134,9 @@ def setup_test_data(conn):
           source_id, evidence_id, "draft", "open", 0.85, now_iso(), now_iso()))
 
     # 8. 插入 review_items（添加 fact_key 和 reason，移除 updated_at）
+    candidate_hash = compute_persisted_candidate_hash(
+        conn, candidate_id, expected_evidence_ids=[evidence_id]
+    )
     payload = json.dumps({
         "candidate": {
             "entity_id": entity_id,
@@ -131,12 +144,15 @@ def setup_test_data(conn):
             "period_label": "2024",
             "value_type": "actual",
             "measurement_scope": "plant",
+            "metric": "gross_generation",
+            "normalized_unit": "gwh",
             "generation_gwh": 12500.0,
             "value_raw": "12,500",
             "unit_raw": "GWh"
         },
         "evidence_ids": [evidence_id],
-        "validation_issues": []
+        "validation_issues": [],
+        "candidate_hash": candidate_hash,
     })
 
     conn.execute("""
@@ -318,6 +334,89 @@ def test_D12_approve_syncs_generation_records(test_db, ctx):
     assert gen_row["evidence_id"] == data["evidence_id"], "generation_records.evidence_id 未填充"
 
     print("OK D12: approve correctly syncs all generation_records fields")
+
+
+def test_approve_rejects_changed_candidate_version(test_db, ctx):
+    """审批入队后候选值变化时，旧审批失效且不得发布。"""
+    data = setup_test_data(test_db)
+    test_db.execute(
+        "UPDATE extraction_candidates SET generation_gwh = 12600 WHERE candidate_id = ?",
+        (data["candidate_id"],),
+    )
+    test_db.commit()
+    task = Task(
+        task_id=data["task_id"], entity_id=data["entity_id"],
+        entity_type=EntityType.STATION, task_type=TaskType.STATION_GENERATION,
+        target_period="2024",
+    )
+
+    result = apply_review_decision(ctx, task, data["review_id"], "approve")
+
+    assert not result.succeeded
+    assert "版本已变化" in result.error
+    review = test_db.execute(
+        "SELECT status FROM review_items WHERE review_id = ?", (data["review_id"],)
+    ).fetchone()
+    assert review["status"] == "invalidated"
+    record = test_db.execute(
+        "SELECT publication_status FROM generation_records WHERE entity_id = ?",
+        (data["entity_id"],),
+    ).fetchone()
+    assert record["publication_status"] == "draft"
+
+
+def test_approve_rejects_broken_document_evidence_version(test_db, ctx):
+    """归档文档哈希不再匹配证据时，审批失败关闭而不是沿用旧结果。"""
+    data = setup_test_data(test_db)
+    test_db.execute(
+        "UPDATE documents SET content_hash = 'changed_hash' WHERE document_id = ?",
+        (data["document_id"],),
+    )
+    test_db.commit()
+    task = Task(
+        task_id=data["task_id"], entity_id=data["entity_id"],
+        entity_type=EntityType.STATION, task_type=TaskType.STATION_GENERATION,
+        target_period="2024",
+    )
+
+    result = apply_review_decision(ctx, task, data["review_id"], "approve")
+
+    assert not result.succeeded
+    assert "候选证据链无效" in result.error
+    review = test_db.execute(
+        "SELECT status FROM review_items WHERE review_id = ?", (data["review_id"],)
+    ).fetchone()
+    assert review["status"] == "invalidated"
+
+
+def test_review_cannot_be_approved_twice(test_db, ctx):
+    """重复点击通过不会重复 Promotion，也不会把已成功任务改成失败。"""
+    data = setup_test_data(test_db)
+    task = Task(
+        task_id=data["task_id"], entity_id=data["entity_id"],
+        entity_type=EntityType.STATION, task_type=TaskType.STATION_GENERATION,
+        target_period="2024",
+    )
+    first = apply_review_decision(ctx, task, data["review_id"], "approve")
+    assert first.succeeded
+    before_count = test_db.execute(
+        "SELECT COUNT(*) FROM generation_records WHERE entity_id = ?",
+        (data["entity_id"],),
+    ).fetchone()[0]
+
+    second = apply_review_decision(ctx, task, data["review_id"], "approve")
+
+    assert not second.succeeded
+    assert "只能从 open 状态裁决一次" in second.error
+    after_count = test_db.execute(
+        "SELECT COUNT(*) FROM generation_records WHERE entity_id = ?",
+        (data["entity_id"],),
+    ).fetchone()[0]
+    assert after_count == before_count
+    task_row = test_db.execute(
+        "SELECT status FROM tasks WHERE task_id = ?", (data["task_id"],)
+    ).fetchone()
+    assert task_row["status"] == "success"
 
 
 def test_D02_source_type_detection(test_db):

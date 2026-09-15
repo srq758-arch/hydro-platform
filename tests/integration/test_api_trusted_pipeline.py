@@ -165,7 +165,7 @@ class TestApiTrustedPipeline:
 
         # Mock 抽取
         from hydro_platform.models.candidate import ExtractionCandidate
-        from hydro_platform.common.enums import ValueType, MeasurementScope, PeriodType
+        from hydro_platform.common.enums import GenerationMetric, NormalizedEnergyUnit, ValueType, MeasurementScope, PeriodType
         mock_extract.return_value = [
             ExtractionCandidate(
                 entity_id="STATION_TOP100",
@@ -240,7 +240,7 @@ class TestApiTrustedPipeline:
 
         # Mock 抽取（干净候选）
         from hydro_platform.models.candidate import ExtractionCandidate
-        from hydro_platform.common.enums import ValueType, MeasurementScope, PeriodType
+        from hydro_platform.common.enums import GenerationMetric, NormalizedEnergyUnit, ValueType, MeasurementScope, PeriodType
         expected_candidate = ExtractionCandidate(
             entity_id="STATION_NORMAL",
             task_id="test_task",
@@ -248,6 +248,8 @@ class TestApiTrustedPipeline:
             period_type=PeriodType.CALENDAR_YEAR,  # 必须指定，否则升级失败
             period_label="2023",
             generation_gwh=50.0,
+            metric=GenerationMetric.GROSS_GENERATION,
+            normalized_unit=NormalizedEnergyUnit.GWH,
             value_raw="50",
             unit_raw="GWh",
             snippet="2023年发电量：50 GWh",

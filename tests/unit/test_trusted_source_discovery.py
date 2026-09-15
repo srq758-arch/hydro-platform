@@ -5,7 +5,64 @@ from unittest.mock import Mock
 from hydro_platform.discovery.relevance import CandidateRelevanceVerifier
 from hydro_platform.app.api import Api
 from hydro_platform.intelligence.deepseek_agent import TaskIntent
+from hydro_platform.intelligence.search_aggregator import SearchAggregator
 from hydro_platform.intelligence.trusted_source_discovery import TrustedSourceDiscovery
+from hydro_platform.models.source_pipeline import CandidateSource
+
+
+def test_url_canonicalization_strips_tracking_noise_but_preserves_business_query():
+    assert TrustedSourceDiscovery.canonicalize_url(
+        "HTTPS://Publisher.Example:443/reports//three-gorges-2024/?utm_source=search&year=2024#table"
+    ) == "https://publisher.example/reports/three-gorges-2024?year=2024"
+    assert TrustedSourceDiscovery.canonicalize_url(
+        "https://publisher.example/download?id=2024&token=abc/"
+    ) == "https://publisher.example/download?id=2024&token=abc%2F"
+
+
+def test_deduplicate_collapses_url_variants_and_keeps_original_url_for_audit():
+    values = [
+        {"url": "https://publisher.example/report/?utm_medium=search", "title": "first"},
+        {"url": "https://PUBLISHER.example/report#page=2", "title": "duplicate"},
+    ]
+    merged = TrustedSourceDiscovery._deduplicate(values)
+    assert len(merged) == 1
+    assert merged[0]["url"] == values[0]["url"]
+    assert merged[0]["canonical_url"] == "https://publisher.example/report"
+    assert merged[0]["metadata"]["publisher_domain"] == "publisher.example"
+
+
+def test_search_aggregator_prefers_redirect_target_and_keeps_entry_alias():
+    merged = SearchAggregator.merge([
+        {
+            "url": "https://short.example/go?id=42",
+            "canonical_url": "https://short.example/go?id=42",
+            "final_url": "https://publisher.example/reports/annual/?utm_source=search#page=3",
+            "access_status": "reachable",
+        },
+        {
+            "url": "https://publisher.example/reports/annual",
+            "canonical_url": "https://publisher.example/reports/annual",
+            "final_url": "https://publisher.example/reports/annual",
+            "access_status": "reachable",
+        },
+    ], prefer_final=True)
+
+    assert len(merged) == 1
+    assert merged[0]["canonical_url"] == "https://publisher.example/reports/annual"
+    assert "https://short.example/go?id=42" in merged[0]["metadata"]["alias_urls"]
+    assert merged[0]["metadata"]["publisher_domain"] == "publisher.example"
+
+
+def test_search_aggregator_publisher_summary_is_grouped_and_sorted():
+    summary = SearchAggregator.publisher_summary([
+        {"url": "https://b.example/one", "source_type": "reference"},
+        {"url": "https://a.example/one", "source_type": "official"},
+        {"url": "https://a.example/two", "source_type": "authority"},
+    ])
+    assert summary == [
+        {"publisher_domain": "a.example", "count": 2, "source_types": ["authority", "official"]},
+        {"publisher_domain": "b.example", "count": 1, "source_types": ["reference"]},
+    ]
 
 
 def _candidate(url: str, title: str, *, method: str, reason: str = ""):
@@ -135,7 +192,8 @@ def test_engine_merges_native_program_and_gem_but_returns_only_qualified_candida
     )
 
     assert warnings == []
-    assert [item["url"] for item in qualified] == [valid["url"]]
+    assert all(isinstance(item, CandidateSource) for item in qualified)
+    assert [item.url for item in qualified] == [valid["url"]]
     assert any(item.get("status") == "ineligible" and "安全责任" in item.get("error", "") for item in audited)
     assert search.search.call_args.args[0] == (
         "三峡电站 2023 发电量", "三峡工程 2023 年全年发电量", "长江电力 2023 三峡电站 年度报告",
@@ -168,9 +226,115 @@ def test_engine_keeps_relevant_real_search_result_when_model_returns_no_candidat
                  "local_name": "长江三峡水电站", "aliases": None},
     )
 
-    assert [item["url"] for item in qualified] == [source["url"]]
-    assert qualified[0]["source_type"] == "reference"
-    assert qualified[0]["metadata"]["requires_manual_verification"] is True
+    assert all(isinstance(item, CandidateSource) for item in qualified)
+    assert [item.url for item in qualified] == [source["url"]]
+    assert qualified[0].source_type == "reference"
+    assert qualified[0].metadata["requires_manual_verification"] is True
+
+
+def test_engine_resolves_public_attachment_when_entry_page_has_no_generation_value():
+    """入口页只是报告索引时，公开附件须作为独立可采集候选重新预检。"""
+    entry_url = "https://publisher.example/reports/three-gorges-2024"
+    attachment_url = "https://publisher.example/files/three-gorges-2024-generation.pdf"
+    agent = Mock()
+    agent.search.return_value = []
+    agent.evaluate_search_results.return_value = []
+    search = Mock()
+    search.search.return_value = [{
+        "url": entry_url, "title": "Three Gorges report index 2024",
+        "snippet": "Report centre", "publisher": "publisher.example", "query": "Three Gorges 2024 annual generation",
+    }]
+    probe = Mock()
+
+    def probe_values(values):
+        rows = []
+        for value in values:
+            metadata = dict(value.get("metadata") or {})
+            if value["url"] == entry_url:
+                metadata.update({
+                    "content_preview": "Three Gorges report centre 2024.",
+                    "discovered_links": [{
+                        "url": attachment_url,
+                        "text": "Three Gorges Dam 2024 annual generation report PDF",
+                    }],
+                })
+            else:
+                metadata["content_preview"] = "Three Gorges Dam 2024 annual generation report."
+            rows.append({
+                **value, "metadata": metadata, "access_status": "reachable", "status": "discovered",
+                "http_status": 200, "final_url": value["url"], "error": None,
+            })
+        return rows
+
+    probe.probe_many.side_effect = probe_values
+    qualified, audited, warnings = TrustedSourceDiscovery(
+        agent=agent, web_search=search, url_probe=probe,
+    ).discover(
+        intent=TaskIntent(station_name="Three Gorges Dam", target_period="2024", query_hints=("Three Gorges 2024 annual generation",)),
+        station={"entity_id": "station_attachment", "canonical_name": "Three Gorges Dam", "local_name": None, "aliases": None},
+    )
+
+    assert warnings == []
+    assert [item.url for item in qualified] == [attachment_url]
+    assert qualified[0].discovery_method == "html_attachment_link"
+    assert qualified[0].metadata["parent_url"] == entry_url
+    assert len(probe.probe_many.call_args_list) == 2
+    assert any(item.get("url") == entry_url and item.get("status") == "ineligible" for item in audited)
+
+
+def test_real_task_discovery_persists_program_search_lead_and_candidate_lineage(db):
+    db.execute(
+        "INSERT INTO stations(entity_id, entity_type, canonical_name, local_name) VALUES (?, 'station', ?, ?)",
+        ("station-lead", "Three Gorges Dam", "三峡电站"),
+    )
+    db.execute(
+        """INSERT INTO tasks(
+               task_id, entity_id, entity_type, task_type, target_period,
+               status, created_at, updated_at
+           ) VALUES (?, ?, 'station', 'station_generation', '2023', 'pending',
+                     '2026-09-14T00:00:00Z', '2026-09-14T00:00:00Z')""",
+        ("station-lead::station_generation::2023", "station-lead"),
+    )
+    db.commit()
+    source = {
+        "url": "https://disclosure.example/three-gorges-2023.pdf",
+        "title": "三峡电站2023年年度发电量802.71亿千瓦时",
+        "snippet": "三峡电站 2023 年全年发电量年度报告",
+        "publisher": "disclosure.example",
+        "query": "三峡电站 2023 完成发电量",
+        "search_engine": "test-program-search",
+    }
+    agent = Mock()
+    agent.search.return_value = []
+    agent.evaluate_search_results.return_value = []
+    search = Mock()
+    search.search.return_value = [source]
+    probe = Mock()
+    probe.probe_many.side_effect = lambda values: [
+        {**value, "access_status": "reachable", "status": "discovered", "http_status": 200,
+         "final_url": value["url"], "error": None}
+        for value in values
+    ]
+
+    qualified, _, warnings = TrustedSourceDiscovery(
+        agent=agent, web_search=search, url_probe=probe, conn=db,
+    ).discover(
+        task_id="station-lead::station_generation::2023",
+        intent=TaskIntent(station_name="三峡电站", target_period="2023", query_hints=(source["query"],)),
+        station={"entity_id": "station-lead", "canonical_name": "Three Gorges Dam", "local_name": "三峡电站"},
+    )
+
+    assert warnings == []
+    assert len(qualified) == 1
+    assert qualified[0].task_id == "station-lead::station_generation::2023"
+    assert qualified[0].lead_id
+    row = db.execute(
+        "SELECT provider, query_text, url, status, raw_payload_hash FROM search_leads"
+    ).fetchone()
+    assert tuple(row) == (
+        "test-program-search", source["query"], source["url"], "normalized", row[4],
+    )
+    assert len(row[4]) == 64
 
 
 def test_chinese_station_query_prefers_short_name_and_completed_generation_phrase():

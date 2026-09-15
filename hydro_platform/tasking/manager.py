@@ -8,7 +8,9 @@ manager 是状态转换的唯一执行入口：每次转换都先读当前状态
 from __future__ import annotations
 
 import sqlite3
+from datetime import timedelta
 
+from ..common.clock import now
 from ..common.enums import FailureStage, TaskStatus
 from ..common.logging_setup import get_logger
 from ..database.connection import transaction
@@ -60,9 +62,55 @@ class TaskManager:
 
     # ---- 语义方法 ----
 
-    def claim(self, task_id: str) -> None:
-        """调度器领取任务：pending → running。"""
-        self._transition(task_id, TaskStatus.RUNNING)
+    def claim(
+        self,
+        task_id: str,
+        *,
+        worker_id: str | None = None,
+        lease_seconds: int = 120,
+    ) -> None:
+        """调度器原子领取任务：pending → running。
+
+        不能先读再写，否则两个 scheduler 可能同时观察到 pending 并重复执行。
+        条件 UPDATE 在 SQLite 写锁内重新判断状态，竞争者只有一个能成功。
+        """
+        if lease_seconds < 1:
+            raise ValueError("lease_seconds 必须 >= 1")
+        claimed_at = now()
+        expires_at = (claimed_at + timedelta(seconds=lease_seconds)).isoformat()
+        with transaction(self.conn):
+            if self.repo.claim_if_pending(
+                task_id,
+                worker_id=worker_id,
+                lease_expires_at=expires_at if worker_id else None,
+                heartbeat_at=claimed_at.isoformat() if worker_id else None,
+            ):
+                logger.debug("任务 %s：pending → running（原子领取）", task_id)
+                return
+            row = self.repo.get(task_id)
+            if row is None:
+                raise TaskNotFound(task_id)
+            raise sm.IllegalTransition(TaskStatus(row["status"]), TaskStatus.RUNNING)
+
+    def heartbeat(self, task_id: str, *, worker_id: str, lease_seconds: int = 120) -> bool:
+        """续期当前 worker 的租约；失去租约时返回 False，不覆盖其他 worker。"""
+        if not worker_id:
+            raise ValueError("worker_id 不能为空")
+        if lease_seconds < 1:
+            raise ValueError("lease_seconds 必须 >= 1")
+        heartbeat_at = now()
+        with transaction(self.conn):
+            return self.repo.heartbeat_lease(
+                task_id,
+                worker_id=worker_id,
+                heartbeat_at=heartbeat_at.isoformat(),
+                lease_expires_at=(heartbeat_at + timedelta(seconds=lease_seconds)).isoformat(),
+            )
+
+    def recover_expired_leases(self) -> list[str]:
+        """恢复崩溃 worker 遗留任务为 failed，随后须经既有重试上限再回排。"""
+        with transaction(self.conn):
+            return self.repo.recover_expired_leases(before=now().isoformat())
 
     def mark_success(self, task_id: str) -> None:
         """采集入库成功：running → success。清空失败痕迹。"""

@@ -58,6 +58,13 @@ class CandidateRelevanceVerifier:
             raw.extend(re.split(r"[;,|/；、]", aliases))
         elif isinstance(aliases, Iterable):
             raw.extend(str(item) for item in aliases)
+        # Identity Profile 的 search_aliases 由 seedlist 原字段派生或由已经
+        # 接受/成功的来源画像补充；它不覆盖 canonical_name，只扩大可解释匹配。
+        search_aliases = station.get("search_aliases")
+        if isinstance(search_aliases, str):
+            raw.extend(re.split(r"[;,|/；、]", search_aliases))
+        elif isinstance(search_aliases, Iterable):
+            raw.extend(str(item) for item in search_aliases)
         values: list[str] = []
         for value in raw:
             value = str(value or "").strip()
@@ -90,7 +97,7 @@ class CandidateRelevanceVerifier:
             candidate.get("url"), candidate.get("canonical_url"), candidate.get("final_url"),
             candidate.get("link_text"), candidate.get("section_title"), candidate.get("match_reason"),
             metadata.get("search_title"), metadata.get("search_snippet"),
-            metadata.get("content_preview"),
+            metadata.get("content_preview"), metadata.get("parent_content_preview"),
         )
         return " ".join(str(value or "") for value in values).lower()
 

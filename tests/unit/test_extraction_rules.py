@@ -49,6 +49,9 @@ def test_find_years():
 def test_value_type_clue_forecast_priority():
     assert detect_value_type_clue("预计发电量").value_type == ValueType.FORECAST
     assert detect_value_type_clue("actual generation").value_type == ValueType.ACTUAL
+    assert detect_value_type_clue("全年发电量达到 1118 亿千瓦时").value_type == ValueType.ACTUAL
+    # 预测词优先，不能因为同时出现“达到”而误判为实际值。
+    assert detect_value_type_clue("预计全年发电量达到 100 亿千瓦时").value_type == ValueType.FORECAST
     assert detect_value_type_clue("发电量 1234 GWh").value_type is None
 
 
@@ -100,6 +103,18 @@ def test_quarter_flag():
     c = cands[0]
     assert c.period_type == PeriodType.QUARTER
     assert "PERIOD_QUARTER" in c.flags
+
+
+def test_year_without_full_year_clue_is_ambiguous():
+    candidate = extract_from_text("2024 年完成发电量 802.71 亿千瓦时")[0]
+    assert candidate.period_type == PeriodType.CALENDAR_YEAR
+    assert "PERIOD_UNCLEAR" in candidate.flags
+
+
+def test_explicit_full_year_clue_is_not_ambiguous():
+    candidate = extract_from_text("2024 年全年完成总发电量 802.71 亿千瓦时")[0]
+    assert candidate.period_type == PeriodType.CALENDAR_YEAR
+    assert "PERIOD_UNCLEAR" not in candidate.flags
 
 
 def test_extract_from_parsed_tables():

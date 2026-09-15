@@ -13,8 +13,10 @@ from hydro_platform.tasking.manager import TaskManager
 class _CancellingRouter:
     def __init__(self, conn):
         self.conn = conn
+        self.calls = []
 
     def fetch(self, url, *, expected):
+        self.calls.append(url)
         self.conn.execute("UPDATE tasks SET status='cancelled' WHERE task_id=?", (self.task_id,))
         self.conn.commit()
         return FetchResult(
@@ -36,7 +38,10 @@ class _CancellingRouter:
 
 class _Resolver:
     def resolve(self, _task):
-        return [SourceRef("https://example.test/cancel", ContentKind.HTML)]
+        return [
+            SourceRef("https://example.test/cancel", ContentKind.HTML),
+            SourceRef("https://example.test/must-not-run", ContentKind.HTML),
+        ]
 
 
 def test_cancellation_stops_before_archive(db, tmp_path):
@@ -65,3 +70,10 @@ def test_cancellation_stops_before_archive(db, tmp_path):
     run = db.execute("SELECT status, failure_stage FROM task_runs WHERE task_id=?", (task.task_id,)).fetchone()
     assert run["status"] == "failed"
     assert run["failure_stage"] == "CANCELLED"
+    assert router.calls == ["https://example.test/cancel"]
+    attempt = db.execute(
+        """SELECT status, failure_stage, failure_code FROM source_attempts
+           WHERE task_id=?""",
+        (task.task_id,),
+    ).fetchone()
+    assert tuple(attempt) == ("cancelled", "CANCELLED", "CANCELLED")

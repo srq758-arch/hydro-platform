@@ -86,6 +86,31 @@ class TestApprovalVersioning:
 
         assert hash1 != hash2, "不同数据应产生不同哈希"
 
+    @pytest.mark.parametrize(
+        "field,changed",
+        [
+            ("period_type", "quarter"),
+            ("measurement_scope", "group"),
+            ("unit_raw", "MWh"),
+            ("document_id", "doc_002"),
+        ],
+    )
+    def test_hash_binds_complete_fact_semantics(self, field, changed):
+        """年份类型、口径、原始单位和文档版本均属于审批内容。"""
+        base = {
+            "entity_id": "sta_001",
+            "period_type": "calendar_year",
+            "period_label": "2023",
+            "generation_gwh": 100.0,
+            "value_type": "actual",
+            "measurement_scope": "plant",
+            "unit_raw": "GWh",
+            "document_id": "doc_001",
+        }
+        changed_data = dict(base)
+        changed_data[field] = changed
+        assert compute_candidate_hash(base) != compute_candidate_hash(changed_data)
+
     def test_create_review_with_hash(self, test_db):
         """测试创建带哈希的复核项。"""
         conn = test_db

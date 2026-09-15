@@ -24,6 +24,7 @@ from ..common.result import ValidationResult
 from ..database.connection import transaction
 from ..database.repositories import EvidenceRepository, GenerationRepository
 from ..models.candidate import ExtractionCandidate
+from .promotion_gates import PROMOTION_GATE_VERSION, evaluate_station_annual_generation_gates
 
 
 class PromotionError(Exception):
@@ -39,6 +40,8 @@ class PromotionResult:
     period_label: str
     value_type: str
     measurement_scope: str
+    metric: str
+    gate_version: str
     newly_created: bool
 
 
@@ -66,6 +69,14 @@ def promote_candidate(
     _require(cand.period_type is not None, "候选缺 period_type")
     _require(cand.period_label is not None, "候选缺 period_label")
     _require(
+        cand.value_type is not None,
+        "候选缺 value_type，禁止默认推断为 actual",
+    )
+    _require(
+        cand.measurement_scope is not None,
+        "候选缺 measurement_scope，禁止默认推断为 plant",
+    )
+    _require(
         cand.generation_gwh is not None,
         "generation_gwh 为空不可升级（没有公开数据 ≠ 0）",
     )
@@ -79,14 +90,21 @@ def promote_candidate(
     ev_row = EvidenceRepository(conn).get(evidence_id)
     _require(ev_row is not None, f"evidence_id={evidence_id} 未落库")
 
-    if review_required:
-        _require(review_approved, "需复核但未 approve，不可升级")
-
-    value_type = str(cand.value_type.value if cand.value_type else "actual")
-    scope = str(
-        cand.measurement_scope.value if cand.measurement_scope else "plant"
+    gate_report = evaluate_station_annual_generation_gates(
+        cand,
+        evidence_persisted=ev_row is not None,
+        review_satisfied=(not review_required or review_approved),
     )
-    period_type = str(cand.period_type.value if cand.period_type else "")
+    if not gate_report.passed:
+        failure = gate_report.failures[0]
+        raise PromotionError(f"Promotion gate {failure.name} failed: {failure.reason}")
+
+    # 上面的门禁已经保证三项枚举均明确存在。这里禁止使用兜底值，避免把
+    # “未知”静默提升为“实际值 / 单站口径”。
+    value_type = str(cand.value_type.value)
+    scope = str(cand.measurement_scope.value)
+    period_type = str(cand.period_type.value)
+    metric = str(cand.metric.value)
     key = dict(
         entity_id=cand.entity_id,
         period_type=period_type,
@@ -102,6 +120,8 @@ def promote_candidate(
         values = {
             **key,
             "generation_gwh": cand.generation_gwh,
+            "metric": metric,
+            "normalized_unit": cand.normalized_unit.value,
             "unit_raw": cand.unit_raw,
             "value_raw": cand.value_raw,
             "source_id": cand.source_id,
@@ -120,5 +140,7 @@ def promote_candidate(
 
     return PromotionResult(
         newly_created=existing is None,
+        metric=metric,
+        gate_version=PROMOTION_GATE_VERSION,
         **key,
     )

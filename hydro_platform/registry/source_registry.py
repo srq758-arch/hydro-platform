@@ -48,7 +48,23 @@ class SourceRegistry:
         3. 优先返回覆盖目标年份的来源
         4. 按 source_reliability_score 降序
         """
-        logger.info(f"查询历史来源: entity_id={entity_id}, metric={metric}, year={year}")
+        sources = self.query_sources(entity_id=entity_id, metric=metric, year=year, limit=1)
+        return sources[0] if sources else None
+
+    def query_sources(
+        self,
+        entity_id: str,
+        metric: str,
+        year: int | None = None,
+        limit: int = 5,
+    ) -> List[dict]:
+        """按年份匹配和可靠性返回 Top-N 历史来源，而非只保留第一条。"""
+        if limit < 1:
+            return []
+        logger.info(
+            "查询历史来源队列: entity_id=%s, metric=%s, year=%s, limit=%s",
+            entity_id, metric, year, limit,
+        )
 
         # 查询条件
         query = """
@@ -87,19 +103,16 @@ class SourceRegistry:
                 source_reliability_score DESC,
                 -- 最近成功时间降序
                 last_success DESC
-            LIMIT 1
+            LIMIT ?
         """
 
-        cursor = self.conn.execute(query, (entity_id, metric, year, year))
-        row = cursor.fetchone()
-
-        if row:
-            source = dict(row)
-            logger.info(f"找到历史来源: {source['source_url']} (评分: {source['source_reliability_score']:.2f})")
-            return source
-        else:
+        cursor = self.conn.execute(query, (entity_id, metric, year, year, limit))
+        sources = [dict(row) for row in cursor.fetchall()]
+        if not sources:
             logger.info("未找到历史来源")
-            return None
+            return []
+        logger.info("找到 %d 个历史来源候选", len(sources))
+        return sources
 
     def register_new_source(
         self,
@@ -139,6 +152,8 @@ class SourceRegistry:
                 url,
                 source_url,
                 canonical_url,
+                publisher,
+                language,
                 source_type,
                 document_type,
                 covered_metric,
@@ -150,7 +165,7 @@ class SourceRegistry:
                 failure_count,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
         """, (
             source_id,
             entity_id,
@@ -158,6 +173,8 @@ class SourceRegistry:
             source_url,  # 兼容旧 url 字段
             source_url,
             metadata.get("canonical_url", source_url),
+            metadata.get("publisher"),
+            metadata.get("language"),
             metadata.get("source_type", "unknown"),
             metadata.get("document_type", "unknown"),
             metadata.get("covered_metric", "generation"),
@@ -192,6 +209,14 @@ class SourceRegistry:
                 updated_at = ?
             WHERE source_id = ?
         """, (now, now, source_id))
+
+        # 只在来源已经真实成功后沉淀 Publisher Profile；发现/预检阶段绝不调用。
+        try:
+            from ..discovery.publisher_profile import PublisherProfileRepository
+            PublisherProfileRepository(self.conn).record_success(source_id)
+        except sqlite3.OperationalError:
+            # v15 未部署的兼容数据库仍可完成来源成功记录。
+            pass
 
         self.conn.commit()
 
@@ -242,8 +267,11 @@ class SourceRegistry:
         # 检查1: 最近7天失败次数
         if source.get("last_failure"):
             try:
-                last_failure = datetime.fromisoformat(source["last_failure"])
-                days_since_failure = (datetime.utcnow() - last_failure).days
+                last_failure = datetime.fromisoformat(
+                    str(source["last_failure"]).replace("Z", "+00:00")
+                )
+                now = datetime.now(last_failure.tzinfo) if last_failure.tzinfo else datetime.utcnow()
+                days_since_failure = (now - last_failure).days
 
                 if days_since_failure < 7 and source.get("failure_count", 0) >= 3:
                     logger.warning(f"来源 {source['source_id']} 最近频繁失败，建议重新 Discovery")
@@ -254,8 +282,11 @@ class SourceRegistry:
         # 检查2: 最近成功时间
         if source.get("last_success"):
             try:
-                last_success = datetime.fromisoformat(source["last_success"])
-                days_since_success = (datetime.utcnow() - last_success).days
+                last_success = datetime.fromisoformat(
+                    str(source["last_success"]).replace("Z", "+00:00")
+                )
+                now = datetime.now(last_success.tzinfo) if last_success.tzinfo else datetime.utcnow()
+                days_since_success = (now - last_success).days
 
                 # 超过90天未成功，建议重新检查
                 if days_since_success > 90:

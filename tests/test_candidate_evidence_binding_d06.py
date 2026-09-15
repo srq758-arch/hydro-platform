@@ -231,7 +231,7 @@ class TestCandidateEvidenceBinding:
         assert len(candidate['evidence_ids']) == 2
 
     def test_promote_candidate_to_generation_record(self, test_db):
-        """测试将候选升级为正式记录。"""
+        """旧候选升级入口不得绕过统一 Promotion。"""
         conn = test_db
 
         create_candidate_with_evidence(
@@ -248,30 +248,14 @@ class TestCandidateEvidenceBinding:
             generation_gwh=200.0
         )
 
-        record_id = promote_candidate_to_generation_record(
-            conn=conn,
-            candidate_id='cand_006',
-            source_id='src_test',
-            task_id='task_test'
-        )
-
-        # 验证记录已创建
-        record = conn.execute("""
-            SELECT * FROM generation_records WHERE id = ?
-        """, (record_id,)).fetchone()
-
-        assert record is not None
-        assert record['generation_gwh'] == 200.0
-        assert record['candidate_id'] == 'cand_006'
-        assert record['evidence_id'] == 'evi_001'
-
-        # 验证历史记录已创建
-        history = conn.execute("""
-            SELECT * FROM generation_record_history WHERE record_id = ?
-        """, (record_id,)).fetchone()
-
-        assert history is not None
-        assert history['change_type'] == 'promoted'
+        with pytest.raises(CandidateEvidenceError, match="旧候选升级入口已禁用"):
+            promote_candidate_to_generation_record(
+                conn=conn,
+                candidate_id='cand_006',
+                source_id='src_test',
+                task_id='task_test'
+            )
+        assert conn.execute("SELECT COUNT(*) FROM generation_records").fetchone()[0] == 0
 
     def test_promote_candidate_without_evidence_fails(self, test_db):
         """测试升级无证据的候选应失败。"""
@@ -293,10 +277,10 @@ class TestCandidateEvidenceBinding:
         with pytest.raises(CandidateEvidenceError) as exc:
             promote_candidate_to_generation_record(conn, 'cand_invalid')
 
-        assert '未关联证据' in str(exc.value)
+        assert '旧候选升级入口已禁用' in str(exc.value)
 
     def test_verify_generation_record_traceability(self, test_db):
-        """测试验证正式记录的溯源完整性。"""
+        """旧入口禁用后不会伪造可验证的正式记录。"""
         conn = test_db
 
         # 创建候选并升级
@@ -314,16 +298,12 @@ class TestCandidateEvidenceBinding:
             generation_gwh=300.0
         )
 
-        record_id = promote_candidate_to_generation_record(
-            conn=conn,
-            candidate_id='cand_007',
-            source_id='src_test'
-        )
-
-        # 验证溯源完整性
-        is_valid, reason = verify_generation_record_traceability(conn, record_id)
-        assert is_valid is True
-        assert '溯源完整' in reason
+        with pytest.raises(CandidateEvidenceError, match="旧候选升级入口已禁用"):
+            promote_candidate_to_generation_record(
+                conn=conn,
+                candidate_id='cand_007',
+                source_id='src_test'
+            )
 
     def test_verify_traceability_with_broken_link_fails(self, test_db):
         """测试溯源链断裂时验证失败。"""

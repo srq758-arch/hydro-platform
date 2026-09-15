@@ -130,7 +130,12 @@ class GenerationRanking:
             - total_generation_twh: 总发电量（TWh）
             - avg_generation_gwh: 平均发电量（GWh）
         """
-        stats = self.conn.execute("""
+        from hydro_platform.products.trustworthy_filter import TrustworthyFilter
+
+        trusted_where, trusted_params = TrustworthyFilter.get_sql_where_clause(
+            year=str(year), table_alias="r"
+        )
+        stats = self.conn.execute(f"""
             SELECT
                 COUNT(*) AS total_records,
                 COUNT(DISTINCT r.entity_id) AS total_stations,
@@ -139,11 +144,9 @@ class GenerationRanking:
                 AVG(r.generation_gwh) AS avg_generation_gwh
             FROM generation_records r
             JOIN stations s ON r.entity_id = s.entity_id
-            WHERE r.period_label = ?
-            AND r.period_type = 'calendar_year'
-            AND r.value_type = 'actual'
-            AND r.measurement_scope = 'plant'
-        """, (str(year),)).fetchone()
+            {TrustworthyFilter.get_sql_join_clause(table_alias="r", station_alias="s")}
+            WHERE {trusted_where}
+        """, trusted_params).fetchone()
 
         result = dict(stats)
         # 转换为 TWh

@@ -20,6 +20,7 @@ def make_generation_fact_key(
     period_label: str | None,
     value_type: str | None,
     measurement_scope: str | None,
+    metric: str | None = None,
 ) -> str:
     """与 generation_records 唯一键一致的事实键，用于证据/复核去重。"""
     parts = [
@@ -28,6 +29,7 @@ def make_generation_fact_key(
         period_label or "",
         str(value_type or ""),
         str(measurement_scope or ""),
+        str(metric or ""),
     ]
     return "|".join(parts)
 

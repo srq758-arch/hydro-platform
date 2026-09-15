@@ -10,6 +10,7 @@ import sqlite3
 from typing import Iterable
 
 from ..common.clock import now_iso
+from ..common.enums import TaskStatus
 from ..models.project import Project
 from ..models.station import Station
 from ..models.task import Task
@@ -163,10 +164,123 @@ class TaskRepository:
         params: list = [status, now_iso(), failure_stage, last_error]
         if bump_attempt:
             sets.append("attempts = attempts + 1")
+        if status != TaskStatus.RUNNING.value and self._lease_columns_available():
+            sets.extend([
+                "worker_id = NULL",
+                "lease_expires_at = NULL",
+                "heartbeat_at = NULL",
+            ])
         self.conn.execute(
             f"UPDATE tasks SET {', '.join(sets)} WHERE task_id = ?",
             (*params, task_id),
         )
+
+    def _lease_columns_available(self) -> bool:
+        """兼容尚未升级 v14 的现有数据库。"""
+        columns = {
+            row[1] for row in self.conn.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        return {"worker_id", "lease_expires_at", "heartbeat_at"}.issubset(columns)
+
+    def claim_if_pending(
+        self,
+        task_id: str,
+        *,
+        worker_id: str | None = None,
+        lease_expires_at: str | None = None,
+        heartbeat_at: str | None = None,
+    ) -> bool:
+        """原子执行 pending→running；仅一个竞争 worker 能成功。"""
+        if self._lease_columns_available():
+            cursor = self.conn.execute(
+                """UPDATE tasks
+                   SET status=?, updated_at=?, failure_stage=NULL, last_error=NULL,
+                       worker_id=?, lease_expires_at=?, heartbeat_at=?
+                   WHERE task_id=? AND status=?""",
+                (
+                    TaskStatus.RUNNING.value,
+                    now_iso(),
+                    worker_id,
+                    lease_expires_at,
+                    heartbeat_at,
+                    task_id,
+                    TaskStatus.PENDING.value,
+                ),
+            )
+        else:
+            cursor = self.conn.execute(
+                """UPDATE tasks
+                   SET status=?, updated_at=?, failure_stage=NULL, last_error=NULL
+                   WHERE task_id=? AND status=?""",
+                (
+                    TaskStatus.RUNNING.value,
+                    now_iso(),
+                    task_id,
+                    TaskStatus.PENDING.value,
+                ),
+            )
+        return cursor.rowcount == 1
+
+    def heartbeat_lease(
+        self,
+        task_id: str,
+        *,
+        worker_id: str,
+        lease_expires_at: str,
+        heartbeat_at: str,
+    ) -> bool:
+        """仅持有该租约的 running worker 可以续期。"""
+        if not self._lease_columns_available():
+            return False
+        cursor = self.conn.execute(
+            """UPDATE tasks
+               SET lease_expires_at=?, heartbeat_at=?, updated_at=?
+               WHERE task_id=? AND status=? AND worker_id=?""",
+            (
+                lease_expires_at,
+                heartbeat_at,
+                now_iso(),
+                task_id,
+                TaskStatus.RUNNING.value,
+                worker_id,
+            ),
+        )
+        return cursor.rowcount == 1
+
+    def recover_expired_leases(self, *, before: str) -> list[str]:
+        """把崩溃 worker 的过期 running 任务安全标为可重试失败。"""
+        if not self._lease_columns_available():
+            return []
+        rows = self.conn.execute(
+            """SELECT task_id FROM tasks
+               WHERE status=? AND lease_expires_at IS NOT NULL
+                 AND lease_expires_at < ?""",
+            (TaskStatus.RUNNING.value, before),
+        ).fetchall()
+        task_ids = [row[0] for row in rows]
+        if not task_ids:
+            return []
+        self.conn.executemany(
+            """UPDATE tasks
+               SET status=?, failure_stage=?,
+                   last_error='任务租约已过期，等待受控重试',
+                   attempts=attempts+1, updated_at=?, worker_id=NULL,
+                   lease_expires_at=NULL, heartbeat_at=NULL
+               WHERE task_id=? AND status=? AND lease_expires_at IS NOT NULL
+                 AND lease_expires_at < ?""",
+            [
+                (
+                    TaskStatus.FAILED.value,
+                    "UNKNOWN",
+                    now_iso(),
+                    task_id,
+                    TaskStatus.RUNNING.value,
+                    before,
+                )
+                for task_id in task_ids
+            ],
+        )
+        return task_ids
 
     def get(self, task_id: str) -> sqlite3.Row | None:
         return self.conn.execute(
@@ -262,7 +376,7 @@ class RegistryAuditRepository:
 
 _GENERATION_COLUMNS = (
     "entity_id", "period_type", "period_label", "generation_gwh", "value_type",
-    "measurement_scope", "unit_raw", "value_raw", "source_id", "task_id",
+    "measurement_scope", "metric", "normalized_unit", "unit_raw", "value_raw", "source_id", "task_id",
     "evidence_id", "candidate_id", "confidence", "extractor", "validation_status",
     "review_status", "publication_status", "created_at", "updated_at",
 )
@@ -422,6 +536,10 @@ class EvidenceRepository:
         return int(self.conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0])
 
 
+class ReviewTransitionError(RuntimeError):
+    """Raised when a review decision is not a legal open-item transition."""
+
+
 class ReviewRepository:
     """review_items 表读写（文档 15）。
 
@@ -493,12 +611,24 @@ class ReviewRepository:
         reviewer: str | None = None,
         resolved_value: str | None = None,
     ) -> None:
-        """记录复核决策。status 置为 decision，写 reviewer/resolved_at。"""
-        self.conn.execute(
+        """Record one legal decision from ``open`` using compare-and-set."""
+        allowed = {"approve", "reject", "request_more_evidence"}
+        if decision not in allowed:
+            raise ReviewTransitionError(f"未知复核决策: {decision}")
+        row = self.get(review_id)
+        if row is None:
+            raise ReviewTransitionError(f"复核项不存在: {review_id}")
+        if row["status"] != "open":
+            raise ReviewTransitionError(
+                f"非法复核状态转换: {row['status']} -> {decision}"
+            )
+        cursor = self.conn.execute(
             "UPDATE review_items SET status = ?, reviewer = ?, resolved_value = ?, "
-            "resolved_at = ? WHERE review_id = ?",
+            "resolved_at = ? WHERE review_id = ? AND status = 'open'",
             (decision, reviewer, resolved_value, now_iso(), review_id),
         )
+        if cursor.rowcount != 1:
+            raise ReviewTransitionError(f"复核项状态已被并发修改: {review_id}")
 
     def count(self, *, status: str | None = None) -> int:
         if status is None:

@@ -16,7 +16,9 @@ SYSTEM_PROMPT = (
     "4. 区分周期：季度≠全年，财年≠自然年，据文本填 period_type。\n"
     "5. 区分口径：预测/计划值填 value_type=forecast；实际值填 actual。\n"
     "6. 区分范围：流域/梯级/区域合计填 measurement_scope=region 或 complex；单站填 plant。\n"
-    "7. 每条候选给 confidence(0~1) 表示把握程度。\n"
+    "7. 区分指标：总/毛发电量=gross_generation，净发电量=net_generation，上网电量=energy_sent_out，售电量=electricity_sales；普通‘发电量’无法确认时填 unknown。\n"
+    "8. 只有原始能量单位明确且已正确换算为 GWh 时填 normalized_unit=gwh。\n"
+    "9. 每条候选给 confidence(0~1) 表示把握程度。\n"
 )
 
 USER_TEMPLATE = (

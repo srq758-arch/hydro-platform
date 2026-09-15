@@ -68,4 +68,13 @@ class PipelineContext:
     # 使用 LLM 抽取（默认关闭；本期规则为真实路径，LLM 用 FakeProvider 时才开）
     use_llm: bool = False
     reviewer: str = "auto"
+    # 单个原子任务最多尝试的候选来源数；不影响搜索召回，只限制实际采集预算。
+    max_source_attempts: int = 10
+    # 扫描 PDF 的 OCR 可注入后端；缺省自动尝试 Pytesseract，失败则转人工复核。
+    ocr_backend: object | None = None
+    ocr_language: str = "eng"
+    ocr_max_pages: int = 20
+    # 可选的 1-based 页码→像素区域映射；用于已知表格/证据区域的定向 OCR。
+    # 未提供时仍按整页 OCR，且候选必须进入人工复核。
+    ocr_regions: dict[int, object] | None = None
     _notes: list[str] = field(default_factory=list)

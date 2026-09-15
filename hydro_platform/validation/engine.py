@@ -10,7 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..common.enums import (
+    GenerationMetric,
     MeasurementScope,
+    NormalizedEnergyUnit,
     PeriodType,
     ProjectStatus,
     Severity,
@@ -44,7 +46,12 @@ def _max_annual_gwh(capacity_mw: float) -> float:
 
 def _common_checks(cand: ExtractionCandidate, result: ValidationResult) -> None:
     """Common：必填/单位/数值范围（文档 13.1）。"""
-    result.checked_fields.extend(["generation_gwh", "unit_raw", "period_label"])
+    result.checked_fields.extend(["generation_gwh", "unit_raw", "normalized_unit", "period_label"])
+
+    if cand.normalized_unit != NormalizedEnergyUnit.GWH:
+        result.add_issue(
+            "UNIT_UNCLEAR", "发电量未明确归一为 GWh", Severity.HIGH, "normalized_unit"
+        )
 
     # 单位不清：抽取器已打 UNIT_UNCLEAR 或有原始值但无归一结果
     if "UNIT_UNCLEAR" in cand.flags:
@@ -70,7 +77,19 @@ def _master_checks(
     cand: ExtractionCandidate, ctx: ValidationContext, result: ValidationResult
 ) -> None:
     """Master：身份/发电量/容量-发电量/年份/actual-forecast（文档 13.1）。"""
-    result.checked_fields.extend(["value_type", "measurement_scope", "period_type"])
+    result.checked_fields.extend(["metric", "value_type", "measurement_scope", "period_type"])
+
+    if cand.metric in (None, GenerationMetric.UNKNOWN):
+        result.add_issue(
+            "METRIC_UNCLEAR", "未确认是总发电量、净发电量、上网电量或售电量", Severity.HIGH, "metric"
+        )
+    elif cand.metric != GenerationMetric.GROSS_GENERATION:
+        result.add_issue(
+            "METRIC_MISMATCH",
+            f"指标 {cand.metric} 不是当前产品要求的总发电量",
+            Severity.HIGH,
+            "metric",
+        )
 
     # actual/forecast 混淆：预测值不得冒充实际值
     if cand.value_type == ValueType.FORECAST:
@@ -89,7 +108,7 @@ def _master_checks(
         )
 
     # region/complex 冒充单站
-    if cand.measurement_scope in (MeasurementScope.REGION, MeasurementScope.COMPLEX):
+    if cand.measurement_scope in (MeasurementScope.REGION, MeasurementScope.COMPLEX, MeasurementScope.GROUP):
         result.add_issue(
             "ENTITY_AMBIGUOUS",
             f"测量范围为 {cand.measurement_scope}，疑为区域/群合计而非单站",
@@ -113,6 +132,13 @@ def _master_checks(
         result.add_issue(
             "YEAR_MISMATCH",
             "周期为财年(fiscal_year)，与日历年口径可能不一致",
+            Severity.MEDIUM,
+            "period_type",
+        )
+    if "PERIOD_UNCLEAR" in cand.flags:
+        result.add_issue(
+            "PERIOD_AMBIGUOUS",
+            "仅识别到年份，未发现明确的全年/年度口径，不能确认是全年发电量",
             Severity.MEDIUM,
             "period_type",
         )

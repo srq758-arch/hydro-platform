@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from ..common.enums import FailureStage, Severity, TaskStatus
+from ..common.enums import FailureStage, Severity, SourceTerminationCode, TaskStatus
 from ..common.clock import now_iso
 from ..common.logging_setup import get_logger
 from ..models.source import Source
@@ -23,6 +23,7 @@ from ..database.repositories import (
 )
 from ..evidence.store import EvidenceStore
 from ..extraction.rule_extractors import extract_candidates
+from ..parsing.content import ParsedContent
 from ..parsing.dispatcher import parse_document
 from ..review.queue import ReviewQueue
 from ..tasking.manager import TaskManager
@@ -31,6 +32,7 @@ from .context import PipelineContext
 from .result import PipelineResult
 from .error_handler import PipelineError, wrap_stage
 from .source_resolver import resolve_sources_enhanced
+from .source_attempt_ledger import SourceAttemptLedger
 from ..registry.source_registry import SourceRegistry
 from .entity_attribution import validate_entity_attribution
 from .candidate_evidence_binding import (
@@ -216,6 +218,9 @@ def _execute_pipeline(ctx: PipelineContext, task, tm: TaskManager, result: Pipel
     )
     if not refs:
         raise PipelineError(FailureStage.DISCOVERY_FAILED, "无可采集来源")
+    source_budget = max(1, int(ctx.max_source_attempts))
+    budget_limited = len(refs) > source_budget
+    refs = refs[:source_budget]
 
     capacity_mw, is_top100 = _entity_facts(ctx, task.entity_id)
     entity_names = _entity_names(ctx, task.entity_id)
@@ -223,10 +228,36 @@ def _execute_pipeline(ctx: PipelineContext, task, tm: TaskManager, result: Pipel
 
     all_candidates = []
     registry = SourceRegistry(ctx.conn)  # 用于更新来源评分
+    attempt_ledger = (
+        SourceAttemptLedger(ctx.conn)
+        if SourceAttemptLedger.is_available(ctx.conn)
+        else None
+    )
+    source_failures: list[tuple[FailureStage, str, str]] = []
+
+    def record_source_failure(attempt, stage: FailureStage, code: str, message: str) -> None:
+        if attempt_ledger is not None and attempt is not None:
+            attempt_ledger.fail(
+                attempt,
+                failure_stage=stage.value,
+                failure_code=code,
+                error=message,
+            )
+        source_failures.append((stage, code, message))
+        result.record(stage.value, False, message)
+
+    def ensure_source_active(attempt) -> None:
+        try:
+            _ensure_task_active(ctx, task)
+        except TaskCancelled as exc:
+            if attempt_ledger is not None and attempt is not None:
+                attempt_ledger.cancel(attempt, reason=str(exc))
+            raise
 
     for ref in refs:
         _ensure_task_active(ctx, task)
-        current_source_id = None  # 记录当前来源ID，用于更新评分
+        current_source_id = ref.metadata.get("source_id")
+        attempt = attempt_ledger.start_attempt(ref) if attempt_ledger is not None else None
 
         try:
             fetched = ctx.router.fetch(ref.url, expected=ref.expected)
@@ -241,13 +272,15 @@ def _execute_pipeline(ctx: PipelineContext, task, tm: TaskManager, result: Pipel
                         stage="acquisition"
                     )
 
-                raise PipelineError(
+                message = f"采集失败[{code}]: {ref.url}"
+                record_source_failure(
+                    attempt,
                     FailureStage.ACQUISITION_FAILED,
-                    f"采集失败[{code}]: {ref.url}"
+                    code,
+                    message,
                 )
+                continue
             result.record("acquisition", True, ref.url)
-        except PipelineError:
-            raise
         except Exception as e:
             # 采集异常：更新来源评分
             if current_source_id:
@@ -257,13 +290,16 @@ def _execute_pipeline(ctx: PipelineContext, task, tm: TaskManager, result: Pipel
                     stage="acquisition"
                 )
 
-            raise PipelineError(
+            message = f"采集异常: {ref.url}: {e}"
+            record_source_failure(
+                attempt,
                 FailureStage.ACQUISITION_FAILED,
-                f"采集异常: {ref.url}",
-                cause=e
+                type(e).__name__,
+                message,
             )
+            continue
 
-        _ensure_task_active(ctx, task)
+        ensure_source_active(attempt)
 
         # —— 登记来源（FK 锚点）+ 归档 ——
         try:
@@ -277,9 +313,12 @@ def _execute_pipeline(ctx: PipelineContext, task, tm: TaskManager, result: Pipel
             if arch.newly_archived:
                 result.documents_archived += 1
             result.record("archive", True, arch.document.document_id)
-
-            # 归档成功：更新来源评分（采集+归档都成功）
-            registry.update_success(src_id, document_id=arch.document.document_id)
+            if attempt_ledger is not None and attempt is not None:
+                attempt_ledger.attach_document(
+                    attempt,
+                    document_id=arch.document.document_id,
+                    content_hash=arch.document.content_hash,
+                )
 
         except Exception as e:
             # 归档失败：更新来源评分
@@ -290,13 +329,16 @@ def _execute_pipeline(ctx: PipelineContext, task, tm: TaskManager, result: Pipel
                     stage="archive"
                 )
 
-            raise PipelineError(
+            message = f"归档失败: {ref.url}: {e}"
+            record_source_failure(
+                attempt,
                 FailureStage.ARCHIVE_FAILED,
-                f"归档失败: {ref.url}",
-                cause=e
+                type(e).__name__,
+                message,
             )
+            continue
 
-        _ensure_task_active(ctx, task)
+        ensure_source_active(attempt)
 
         # —— 解析 ——
         try:
@@ -306,31 +348,113 @@ def _execute_pipeline(ctx: PipelineContext, task, tm: TaskManager, result: Pipel
                 content_type=arch.document.content_type,
             )
             if not parsed.ok:
-                raise PipelineError(
+                message = f"解析失败: {parsed.error or arch.document.content_kind}: {ref.url}"
+                if current_source_id:
+                    registry.update_failure(current_source_id, reason=message, stage="parsing")
+                record_source_failure(
+                    attempt,
                     FailureStage.PARSE_FAILED,
-                    f"解析失败: {parsed.error or arch.document.content_kind}"
+                    "PARSE_FAILED",
+                    message,
                 )
+                continue
             result.record("parsing", True, f"{len(parsed.tables)} tables")
-        except PipelineError:
-            raise
         except Exception as e:
-            raise PipelineError(
+            message = f"解析异常: {arch.document.content_kind}: {ref.url}: {e}"
+            if current_source_id:
+                registry.update_failure(current_source_id, reason=message, stage="parsing")
+            record_source_failure(
+                attempt,
                 FailureStage.PARSE_FAILED,
-                f"解析异常: {arch.document.content_kind}",
-                cause=e
+                type(e).__name__,
+                message,
             )
+            continue
+
+        ensure_source_active(attempt)
 
         # —— 抽取（规则为真实路径；可选叠加 LLM）——
         try:
-            cands = extract_candidates(
-                parsed,
-                entity_id=task.entity_id,
-                task_id=task.task_id,
-                source_id=src_id,
-                entity_names=entity_names,
-            )
+            ocr_pages = []
+            if isinstance(parsed.meta, dict) and parsed.meta.get("needs_ocr"):
+                try:
+                    ocr_pages = _run_pdf_ocr_if_needed(ctx, parsed, arch.local_path)
+                except Exception as ocr_exc:  # noqa: BLE001 - 转可操作的 OCR_REQUIRED
+                    parsed.meta["ocr_status"] = "unavailable"
+                    parsed.meta["ocr_error"] = str(ocr_exc)
+                    logger.warning("OCR 不可用，转人工复核：%s", ocr_exc)
+
+            if ocr_pages:
+                cands = []
+                for ocr_page in ocr_pages:
+                    page_parsed = ParsedContent(
+                        kind=parsed.kind,
+                        ok=True,
+                        text=ocr_page.text,
+                    )
+                    cands.extend(
+                        extract_candidates(
+                            page_parsed,
+                            entity_id=task.entity_id,
+                            task_id=task.task_id,
+                            source_id=src_id,
+                            entity_names=entity_names,
+                            text_locator=f"page[{ocr_page.page_number}].ocr",
+                        )
+                    )
+            else:
+                cands = extract_candidates(
+                    parsed,
+                    entity_id=task.entity_id,
+                    task_id=task.task_id,
+                    source_id=src_id,
+                    entity_names=entity_names,
+                )
             if ctx.use_llm and ctx.llm_provider is not None:
                 cands.extend(_llm_candidates(ctx, parsed, task, src_id))
+            if ocr_pages:
+                # OCR 字符/数字及列对齐可能发生误识别，即使规则校验通过也必须人工复核。
+                for candidate in cands:
+                    if "OCR_DERIVED" not in candidate.flags:
+                        candidate.flags.append("OCR_DERIVED")
+                    candidate.confidence = min(candidate.confidence or 0.35, 0.35)
+                    if candidate.extractor and not candidate.extractor.startswith("ocr+"):
+                        candidate.extractor = f"ocr+{candidate.extractor}"
+            if not cands:
+                ocr_status = parsed.meta.get("ocr_status") if isinstance(parsed.meta, dict) else None
+                ocr_required = bool(
+                    isinstance(parsed.meta, dict) and parsed.meta.get("needs_ocr")
+                )
+                code = (
+                    "OCR_REQUIRED" if ocr_required
+                    else "OCR_NO_CANDIDATES" if ocr_status == "completed"
+                    else "EXTRACTION_EMPTY"
+                )
+                message = (
+                    f"来源为无文字层 PDF，OCR 不可用或未完成，需要人工复核: {ref.url}"
+                    if ocr_required
+                    else f"OCR 已执行但未识别出可用候选，需要人工核对页面: {ref.url}"
+                    if ocr_status == "completed"
+                    else f"来源可访问并可解析，但未抽出候选: {ref.url}"
+                )
+                registry.update_failure(current_source_id, reason=message, stage="extraction")
+                record_source_failure(
+                    attempt,
+                    FailureStage.EXTRACTION_EMPTY,
+                    code,
+                    message,
+                )
+                continue
+            if not any(candidate.generation_gwh is not None for candidate in cands):
+                message = f"来源只产生无值噪声候选，不构成发电量事实: {ref.url}"
+                registry.update_failure(current_source_id, reason=message, stage="extraction")
+                record_source_failure(
+                    attempt,
+                    FailureStage.EXTRACTION_EMPTY,
+                    "NO_FACT_CANDIDATE",
+                    message,
+                )
+                continue
             # 把归档信息挂到候选上，供存证阶段引用（不改模型，用局部元组携带）
             for c in cands:
                 # 抽取器（尤其是插件/测试替身）不能决定当前任务和已登记来源。
@@ -340,17 +464,32 @@ def _execute_pipeline(ctx: PipelineContext, task, tm: TaskManager, result: Pipel
                 if c.entity_id is None:
                     c.entity_id = task.entity_id
                 all_candidates.append(
-                    (c, arch.document.document_id, arch.document.content_hash, ref, parsed)
+                    (c, arch.document.document_id, arch.document.content_hash, ref, parsed, attempt)
                 )
         except Exception as e:
-            raise PipelineError(
+            message = f"抽取异常: {ref.url}: {e}"
+            if current_source_id:
+                registry.update_failure(current_source_id, reason=message, stage="extraction")
+            record_source_failure(
+                attempt,
                 FailureStage.EXTRACTION_FAILED,
-                "抽取异常",
-                cause=e
+                type(e).__name__,
+                message,
             )
+            continue
 
     if not all_candidates:
-        raise PipelineError(FailureStage.EXTRACTION_EMPTY, "未抽出任何候选")
+        code = (
+            SourceTerminationCode.NOT_FOUND_WITHIN_SEARCH_BUDGET
+            if budget_limited
+            else SourceTerminationCode.NO_QUALIFIED_SOURCE_FOUND
+        )
+        last_code = source_failures[-1][1] if source_failures else "UNKNOWN"
+        last_message = source_failures[-1][2] if source_failures else "无失败详情"
+        raise PipelineError(
+            FailureStage.SOURCE_NOT_FOUND,
+            f"{code.value}: 已尝试 {len(refs)} 个来源；最后结果[{last_code}]：{last_message}",
+        )
     result.candidates_extracted = len(all_candidates)
     result.record("extraction", True, f"{len(all_candidates)} candidates")
 
@@ -385,9 +524,10 @@ def _execute_pipeline(ctx: PipelineContext, task, tm: TaskManager, result: Pipel
 
     needs_human = False
     promotable = []  # (candidate, validation, evidence_id) 干净可自动升级者
+    attempt_validation: dict[str, dict] = {}
 
     try:
-        for cand, doc_id, content_hash, ref, candidate_parsed in fact_candidates:
+        for cand, doc_id, content_hash, ref, candidate_parsed, source_attempt in fact_candidates:
             _ensure_task_active(ctx, task)
             # D05: 实体归属不是日志提示。验证失败的候选不得自动升级，必须进入
             # Review Queue；验证本身发生异常则让任务失败，不能以“忽略异常”发布。
@@ -414,6 +554,22 @@ def _execute_pipeline(ctx: PipelineContext, task, tm: TaskManager, result: Pipel
                     Severity.HIGH,
                     "entity_id",
                 )
+            if attempt_ledger is not None and source_attempt is not None:
+                attempt_state = attempt_validation.setdefault(
+                    source_attempt.attempt_id,
+                    {
+                        "attempt": source_attempt,
+                        "document_id": doc_id,
+                        "content_hash": content_hash,
+                        "source_id": cand.source_id,
+                        "valid": False,
+                        "reasons": [],
+                    },
+                )
+                if val.passed:
+                    attempt_state["valid"] = True
+                else:
+                    attempt_state["reasons"].extend(issue.code for issue in val.issues)
             candidate_id = _candidate_id(cand, doc_id)
             cand.candidate_id = candidate_id
             eid = store.save_for_candidate(
@@ -436,12 +592,22 @@ def _execute_pipeline(ctx: PipelineContext, task, tm: TaskManager, result: Pipel
                     period_label=cand.period_label,
                     value_type=cand.value_type,
                     measurement_scope=cand.measurement_scope,
+                    metric=cand.metric,
+                    normalized_unit=cand.normalized_unit,
                     generation_gwh=cand.generation_gwh,
                     value_raw=cand.value_raw,
                     unit_raw=cand.unit_raw,
                     snippet=cand.snippet,
                     extraction_method=cand.extractor or 'rule'
                 )
+                if attempt_ledger is not None and source_attempt is not None:
+                    attempt_ledger.bind_candidate(
+                        source_attempt,
+                        document_id=doc_id,
+                        candidate_id=candidate_id,
+                        payload=cand.model_dump(mode="json"),
+                        extractor_version=cand.extractor or "rule",
+                    )
                 logger.debug(f"D06 候选 {candidate_id} 已关联证据 {eid}")
             except CandidateEvidenceError as e:
                 logger.error(f"D06 创建候选-证据关联失败: {e}")
@@ -450,13 +616,44 @@ def _execute_pipeline(ctx: PipelineContext, task, tm: TaskManager, result: Pipel
                     f"候选-证据关联失败: {e}"
                 )
 
-            rid = queue.submit(cand, val, evidence_ids=[eid], is_top100=is_top100)
+            rid = queue.submit(
+                cand,
+                val,
+                evidence_ids=[eid],
+                is_top100=is_top100,
+                evidence_metadata=_review_evidence_metadata(candidate_parsed, cand),
+            )
             if rid is not None:
                 needs_human = True
                 if rid not in result.review_ids:
                     result.review_ids.append(rid)
             elif val.passed:
                 promotable.append((cand, val, eid))
+        for attempt_state in attempt_validation.values():
+            source_attempt = attempt_state["attempt"]
+            source_id = attempt_state["source_id"]
+            if attempt_state["valid"]:
+                attempt_ledger.succeed(
+                    source_attempt,
+                    document_id=attempt_state["document_id"],
+                    content_hash=attempt_state["content_hash"],
+                )
+                if source_id:
+                    registry.update_success(
+                        source_id,
+                        document_id=attempt_state["document_id"],
+                    )
+            else:
+                reason_codes = sorted(set(attempt_state["reasons"]))
+                message = "候选未通过事实校验: " + ", ".join(reason_codes)
+                attempt_ledger.fail(
+                    source_attempt,
+                    failure_stage=FailureStage.VALIDATION_FAILED.value,
+                    failure_code="HARD_GATE_FAILED",
+                    error=message,
+                )
+                if source_id:
+                    registry.update_failure(source_id, reason=message, stage="validation")
         result.record("validation+evidence", True, f"{len(all_candidates)} checked")
     except PipelineError:
         # 保留明确的失败阶段和原因，不能再包成无上下文的通用错误。
@@ -533,9 +730,89 @@ def apply_review_decision(
     logger.info(f"复核决策 {review_id}: {decision}")
 
     try:
-        queue.decide(review_id, decision, reviewer=ctx.reviewer)
+        # approve 必须在写入决策和 Promotion 之前验证候选、证据与归档文档
+        # 仍是进入复核时的同一版本。reject/request_more_evidence 不发布数据，
+        # 可以直接记录人工决策。
+        review_row = ReviewRepository(ctx.conn).get(review_id)
+        if review_row is None:
+            raise PipelineError(
+                FailureStage.REVIEW_REJECTED,
+                f"复核项不存在 {review_id}"
+            )
+        normalized_decision = str(decision)
+        allowed_decisions = {"approve", "reject", "request_more_evidence"}
+        if normalized_decision not in allowed_decisions:
+            message = (
+                f"未知的复核决策: {decision}，仅支持 "
+                "approve/reject/request_more_evidence"
+            )
+            task_run_repo.update_run_failure(
+                run_id=run_id,
+                failure_stage=FailureStage.REVIEW_REJECTED.value,
+                message=message,
+            )
+            result.final_status = TaskStatus.FAILED
+            result.failure_stage = FailureStage.REVIEW_REJECTED
+            result.error = message
+            result.record("review_decision", False, message)
+            return result
+        if review_row["status"] != "open":
+            message = (
+                f"非法复核状态转换: {review_row['status']} -> {normalized_decision}；"
+                "复核项只能从 open 状态裁决一次"
+            )
+            task_run_repo.update_run_failure(
+                run_id=run_id,
+                failure_stage=FailureStage.REVIEW_REJECTED.value,
+                message=message,
+            )
+            result.final_status = TaskStatus.FAILED
+            result.failure_stage = FailureStage.REVIEW_REJECTED
+            result.error = message
+            result.record("review_decision", False, message)
+            return result
+        if normalized_decision == "approve":
+            import json
+            from ..pipeline.approval_versioning import compute_persisted_candidate_hash
 
-        if str(decision) == "reject":
+            payload = json.loads(review_row["payload"] or "{}")
+            approved_hash = payload.get("candidate_hash")
+            if not approved_hash:
+                raise PipelineError(
+                    FailureStage.REVIEW_REJECTED,
+                    f"复核项 {review_id} 缺少候选版本哈希，必须重新入队复核",
+                )
+            try:
+                current_hash = compute_persisted_candidate_hash(
+                    ctx.conn,
+                    review_row["candidate_id"],
+                    expected_evidence_ids=payload.get("evidence_ids") or [],
+                )
+            except (TypeError, ValueError) as exc:
+                ctx.conn.execute(
+                    "UPDATE review_items SET status = 'invalidated' WHERE review_id = ?",
+                    (review_id,),
+                )
+                ctx.conn.commit()
+                raise PipelineError(
+                    FailureStage.REVIEW_REJECTED,
+                    f"复核项 {review_id} 的候选证据链无效: {exc}",
+                    cause=exc,
+                ) from exc
+            if current_hash != approved_hash:
+                ctx.conn.execute(
+                    "UPDATE review_items SET status = 'invalidated' WHERE review_id = ?",
+                    (review_id,),
+                )
+                ctx.conn.commit()
+                raise PipelineError(
+                    FailureStage.REVIEW_REJECTED,
+                    f"复核项 {review_id} 对应的数据或证据版本已变化，旧复核已失效",
+                )
+
+        queue.decide(review_id, normalized_decision, reviewer=ctx.reviewer)
+
+        if normalized_decision == "reject":
             reject_message = f"复核驳回 {review_id}"
             if reason:
                 reject_message += f": {reason}"
@@ -612,7 +889,7 @@ def apply_review_decision(
             return result
 
         # D03修复：request_more_evidence 明确处理，不发布
-        if str(decision) == "request_more_evidence":
+        if normalized_decision == "request_more_evidence":
             # 保持 needs_review 状态，等待补充证据
             result.final_status = TaskStatus.NEEDS_REVIEW
             result.record("review_decision", True, "request_more_evidence")
@@ -626,20 +903,8 @@ def apply_review_decision(
             return result
 
         # 只有明确的 approve 才进入升级分支
-        if str(decision) != "approve":
-            # 拒绝未知决策
-            raise PipelineError(
-                FailureStage.REVIEW_REJECTED,
-                f"未知的复核决策: {decision}，仅支持 approve/reject/request_more_evidence"
-            )
-
         # approve：从载荷重建候选并升级
         review_row = ReviewRepository(ctx.conn).get(review_id)
-        if review_row is None:
-            raise PipelineError(
-                FailureStage.REVIEW_REJECTED,
-                f"复核项不存在 {review_id}"
-            )
 
         cand, val, eid = _rebuild_from_review(ctx, review_row, task)
 
@@ -920,7 +1185,8 @@ def _register_source(ctx: PipelineContext, ref, fetched, task) -> str:
         """,
         (
             task.entity_id,
-            "manual" if getattr(task, "source_type", None) == "manual" else "collected",
+            "manual" if getattr(task, "source_type", None) == "manual" else
+            (getattr(ref, "source_type", None) or "collected"),
             getattr(ref, "expected", None) or "unknown",
             year,
             now_iso(),
@@ -1012,6 +1278,76 @@ def _llm_candidates(ctx, parsed, task, src_id):
         source_id=src_id,
         locator="llm",
     )
+
+
+def _run_pdf_ocr_if_needed(ctx: PipelineContext, parsed: ParsedContent, local_path):
+    """对无文字层 PDF 做可选 OCR，返回按页保留定位的 OCR 结果。
+
+    OCR 失败不在这里升级为管线异常；调用方会把状态写成 ``OCR_REQUIRED``，让
+    用户看到可操作的人工复核提示。成功的 OCR 候选仍由后续 ReviewQueue 强制拦截。
+    """
+    if not isinstance(parsed.meta, dict) or not parsed.meta.get("needs_ocr"):
+        return []
+    from ..parsing.pdf_ocr import ocr_rendered_pages
+    from ..parsing.pdf_renderer import render_pdf_pages
+
+    pages = render_pdf_pages(
+        local_path.read_bytes(),
+        max_pages=max(1, int(ctx.ocr_max_pages)),
+    )
+    ocr_pages = ocr_rendered_pages(
+        pages,
+        backend=ctx.ocr_backend,
+        language=ctx.ocr_language,
+        regions=ctx.ocr_regions,
+    )
+    parsed.meta["ocr_status"] = "completed"
+    parsed.meta["ocr_pages"] = [
+        {
+            "page_number": page.page_number,
+            "engine": page.engine,
+            "engine_version": page.engine_version,
+            "language": page.language,
+            "region": page.region.__dict__ if page.region else None,
+            "source_image_sha256": page.source_image_sha256,
+        }
+        for page in ocr_pages
+    ]
+    parsed.meta["needs_ocr"] = False
+    parsed.text = "\n".join(
+        f"[PDF 第 {page.page_number} 页 OCR]\n{page.text}" for page in ocr_pages if page.text
+    ).strip()
+    return ocr_pages
+
+
+def _review_evidence_metadata(parsed: ParsedContent, cand: ExtractionCandidate) -> dict:
+    """提取复核页需要的 OCR 可审计元数据，不保存图像字节。"""
+    if "OCR_DERIVED" not in cand.flags or not isinstance(parsed.meta, dict):
+        return {}
+    import re
+
+    page_number = None
+    match = re.search(r"(?:^|[.\s])page\[(\d+)\](?:\.|$)", cand.locator or "")
+    if match:
+        page_number = int(match.group(1))
+    page_info = None
+    for item in parsed.meta.get("ocr_pages") or []:
+        if page_number is None or item.get("page_number") == page_number:
+            page_info = item
+            break
+    if not page_info:
+        return {"ocr": {"status": parsed.meta.get("ocr_status") or "unknown"}}
+    return {
+        "ocr": {
+            "status": parsed.meta.get("ocr_status") or "completed",
+            "page_number": page_info.get("page_number"),
+            "engine": page_info.get("engine"),
+            "engine_version": page_info.get("engine_version"),
+            "language": page_info.get("language"),
+            "region": page_info.get("region"),
+            "source_image_sha256": page_info.get("source_image_sha256"),
+        }
+    }
 
 
 def _parse_year(period: str | None) -> int | None:

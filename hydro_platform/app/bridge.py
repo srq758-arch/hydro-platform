@@ -92,6 +92,8 @@ def format_error_for_ui(e: BridgeError) -> str:
 
         # 抽取相关
         ("EXTRACTION", "NO_CANDIDATES"): "文件里没找到发电量数据，可能不是我们需要的报告",
+        ("EXTRACTION", "OCR_REQUIRED"): "这是扫描版或没有文字层的 PDF，需要 OCR 或人工复核后再处理",
+        ("EXTRACTION", "OCR_NO_CANDIDATES"): "OCR 已执行但没有识别出可用候选，请人工核对页面或更换语言包",
         ("EXTRACTION", "EXTRACTION_TIMEOUT"): "数据抽取超时，文件可能太大或内容太复杂",
 
         # 归档相关

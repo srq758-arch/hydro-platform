@@ -1,0 +1,3 @@
+-- v12 is executed structurally by migrations.py so interrupted/partial upgrades
+-- can safely resume column by column.  This file intentionally documents the
+-- migration while keeping the normal version registry complete.

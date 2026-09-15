@@ -1,0 +1,7 @@
+[
+  {"case_id": "holdout_001", "entity_id": "CHN_jinping_1_dam", "canonical_name": "Jinping-I Dam", "country": "China", "year": 2022, "metric": "gross_generation"},
+  {"case_id": "holdout_002", "entity_id": "PAR_itaipu_dam_paraguay", "canonical_name": "Itaipu Dam (Paraguay side)", "country": "Paraguay", "year": 2023, "metric": "gross_generation"},
+  {"case_id": "holdout_003", "entity_id": "EGY_aswan_high_dam", "canonical_name": "Aswan High Dam", "country": "Egypt", "year": 2022, "metric": "gross_generation"},
+  {"case_id": "holdout_004", "entity_id": "TUR_ataturk_dam", "canonical_name": "Ataturk Dam", "country": "Turkey", "year": 2022, "metric": "gross_generation"},
+  {"case_id": "holdout_005", "entity_id": "CHN_gezhouba_dam", "canonical_name": "Gezhouba Dam", "country": "China", "year": 2022, "metric": "gross_generation"}
+]

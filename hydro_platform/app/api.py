@@ -9,6 +9,8 @@
 
 import sqlite3
 import threading
+import base64
+from io import BytesIO
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -30,6 +32,7 @@ from hydro_platform.app.bridge import (
     wrap_extraction_error,
     format_error_for_ui,
 )
+from hydro_platform.intelligence.web_search import SearchRuntime
 
 
 class Api:
@@ -38,13 +41,20 @@ class Api:
     _migration_locks: dict[str, threading.RLock] = {}
     _migration_locks_guard = threading.Lock()
 
-    def __init__(self, data_mode: str = "production"):
+    def __init__(
+        self,
+        data_mode: str = "production",
+        *,
+        search_runtime: SearchRuntime | None = None,
+    ):
         """初始化 API。test 模式使用独立数据库和文件目录，不接触正式数据。"""
         if data_mode not in {"production", "test"}:
             raise ValueError("data_mode must be production or test")
         self.data_mode = data_mode
         self.db_path = get_database_path(data_mode)
         self.raw_root = get_user_data_dir(data_mode) / "raw"
+        # 仅由桌面应用/调度器注入；独立测试实例保持旧的按调用隔离行为。
+        self._search_runtime = search_runtime
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.raw_root.mkdir(parents=True, exist_ok=True)
 
@@ -246,6 +256,92 @@ class Api:
     def get_review_detail(self, record_id: int | str) -> Optional[Dict[str, Any]]:
         """按 review_id 获取复核详情；兼容旧 generation_records.id。"""
         return self._read(lambda q: q.get_review_detail(record_id))
+
+    def get_review_ocr_preview(
+        self,
+        review_id: int | str,
+        page_number: int | None = None,
+        dpi: int = 150,
+    ) -> Dict[str, Any]:
+        """只读渲染复核证据所在 PDF 页面，供 OCR 人工核验。"""
+        detail = self.get_review_detail(review_id)
+        if not detail:
+            return {"status": "failed", "review_id": str(review_id), "message": "未找到复核记录"}
+        metadata = detail.get("evidence_metadata") or {}
+        ocr = metadata.get("ocr") if isinstance(metadata, dict) else None
+        requested_page = page_number or (ocr or {}).get("page_number") or detail.get("page_number")
+        try:
+            requested_page = int(requested_page)
+        except (TypeError, ValueError):
+            return {
+                "status": "failed",
+                "review_id": str(review_id),
+                "message": "复核证据没有有效页码，无法预览原始页",
+            }
+        if requested_page < 1:
+            return {"status": "failed", "review_id": str(review_id), "message": "页码必须从 1 开始"}
+        document_path = detail.get("document_path")
+        if not document_path:
+            return {"status": "failed", "review_id": str(review_id), "message": "复核记录没有归档文档"}
+        path = Path(str(document_path))
+        if not path.is_file():
+            return {"status": "failed", "review_id": str(review_id), "message": "归档文档不存在，无法预览原始页"}
+        try:
+            if path.stat().st_size > 50 * 1024 * 1024:
+                return {"status": "failed", "review_id": str(review_id), "message": "文档超过 50MB 预览上限"}
+            from hydro_platform.parsing.pdf_renderer import render_pdf_pages
+
+            page = render_pdf_pages(
+                path.read_bytes(), page_numbers=[requested_page], dpi=int(dpi), max_pages=1
+            )[0]
+            image_bytes = page.image_bytes
+            region = (ocr or {}).get("region") if isinstance(ocr, dict) else None
+            region_highlighted = False
+            if isinstance(region, dict):
+                try:
+                    from PIL import Image, ImageDraw  # type: ignore[import-not-found]
+
+                    with Image.open(BytesIO(image_bytes)) as image:
+                        image = image.convert("RGBA")
+                        bounds = (
+                            int(region["x0"]), int(region["y0"]),
+                            int(region["x1"]), int(region["y1"]),
+                        )
+                        width, height = image.size
+                        if 0 <= bounds[0] < bounds[2] <= width and 0 <= bounds[1] < bounds[3] <= height:
+                            draw = ImageDraw.Draw(image)
+                            line_width = max(2, round(min(width, height) / 400))
+                            draw.rectangle(bounds, outline=(220, 38, 38, 255), width=line_width)
+                            buffer = BytesIO()
+                            image.save(buffer, format="PNG")
+                            image_bytes = buffer.getvalue()
+                            region_highlighted = True
+                except (ImportError, KeyError, TypeError, ValueError, OSError):
+                    # 区域元数据不可信或 Pillow 不可用时，仍返回未经修改的原页。
+                    region_highlighted = False
+            return {
+                "status": "success",
+                "review_id": str(review_id),
+                "page_number": page.page_number,
+                "mime_type": page.mime_type,
+                "image_data": "data:%s;base64,%s" % (
+                    page.mime_type,
+                    base64.b64encode(image_bytes).decode("ascii"),
+                ),
+                "width": page.width,
+                "height": page.height,
+                "dpi": page.dpi,
+                "engine": page.engine,
+                "source_image_sha256": (ocr or {}).get("source_image_sha256"),
+                "region": region,
+                "region_highlighted": region_highlighted,
+            }
+        except Exception as exc:  # noqa: BLE001 - 转成可操作的预览提示
+            return {
+                "status": "failed",
+                "review_id": str(review_id),
+                "message": f"原始页渲染失败：{exc}",
+            }
 
     def _review_item_for_record(self, conn, record_id: int | str):
         """解析新的 review_id 主键，并兼容旧 generation_records.id。"""
@@ -713,73 +809,42 @@ class Api:
 
     @staticmethod
     def _station_search_intent(station: dict, target_period: str):
-        """为详情页和自然语言任务生成同一份、可审计的来源发现意图。"""
-        import re
+        """兼容 API 名称；查询族唯一实现位于统一 Discovery 服务。"""
+        from hydro_platform.intelligence.source_discovery_service import SourceDiscoveryService
+        return SourceDiscoveryService.build_generation_intent(station, target_period)
 
-        from hydro_platform.intelligence.deepseek_agent import TaskIntent
-
-        name = str(station.get("local_name") or station.get("canonical_name") or "").strip()
-        canonical = str(station.get("canonical_name") or name).strip()
-        # GEM 的当地名称常带河流前缀和“水电站”全称，但发布公告时通常写成
-        # “三峡电站”这类短名。这里的变体是确定性规则，不依赖模型翻译。
-        search_name = re.sub(r"^(?:长江|金沙江|雅砻江|澜沧江|黄河|珠江|红水河)", "", name)
-        search_name = re.sub(r"水电(?:站|厂)$", "电站", search_name)
-        is_chinese = bool(re.search(r"[\u4e00-\u9fff]", search_name))
-        if is_chinese:
-            queries = [
-                # 国内搜索引擎对带英文引号的中文短名会明显改变排序；这里使用
-                # 自然词组，才能优先命中“完成发电量”类公开公告。
-                f'{search_name} {target_period} 完成发电量',
-                f'{search_name} {target_period} 发电量 年度报告',
-                f'"{canonical}" {target_period} annual generation annual report',
-            ]
-        else:
-            queries = [
-                f'"{name}" {target_period} annual generation',
-                f'"{canonical}" {target_period} annual generation annual report',
-            ]
-            operator = str(station.get("operator") or station.get("owner") or "").strip()
-            if operator:
-                queries.append(f'"{operator}" {target_period} annual report "{name}" generation')
-        return TaskIntent(
-            station_name=name, target_period=str(target_period), metric="generation",
-            source_policy="official_or_authority", query_hints=tuple(queries[:3]),
-        )
-
-    @staticmethod
-    def _gem_external_candidates(conn, station: dict, intent) -> list[dict]:
-        """仅把 GEM 外链作为统一发现引擎的一个补充通道。"""
-        from hydro_platform.discovery.official import OfficialSourceFinder
-
-        if not station.get("gem_wiki_url"):
-            return []
-        task = {
-            "entity_id": station["entity_id"], "entity_name": station["canonical_name"],
-            "country": station.get("country"), "target_period": intent.target_period,
-            "metric": intent.metric,
-        }
-        try:
-            values = OfficialSourceFinder(conn).find(task)
-        except Exception:
-            # GEM 只是补充线索；它不可用不能阻断真实搜索通道。
-            return []
-        return [item.to_dict() for item in values if item.discovery_method == "gem_wiki_external_link"]
-
-    def _discover_trusted_source_candidates(self, conn, *, station: dict, intent, agent, on_event=None) -> tuple[list[dict], list[dict], list[str], int]:
+    def _discover_trusted_source_candidates(self, conn, *, station: dict, intent, agent, on_event=None) -> tuple[list[dict], list[dict], list[dict], list[str], int, list[dict]]:
         """唯一的可信来源发现入口；只写候选台账，绝不创建采集任务。"""
         from hydro_platform.discovery.ledger import SourceDiscoveryLedger
-        from hydro_platform.intelligence.trusted_source_discovery import TrustedSourceDiscovery
-
-        gem_candidates = self._gem_external_candidates(conn, station, intent)
-        engine = TrustedSourceDiscovery(agent=agent)
+        from hydro_platform.intelligence.source_discovery_service import (
+            SourceDiscoveryRequest,
+            SourceDiscoveryService,
+        )
 
         def emit(stage: str, payload: dict) -> None:
             if on_event:
                 on_event(stage, payload)
 
-        qualified, audited, warnings = engine.discover(
-            intent=intent, station=station, gem_candidates=gem_candidates, on_event=emit,
+        # GUI、自然语言规划和后台自动补源共用 SourceDiscoveryService；GEM
+        # 外链仅是其中一个 provider，不再存在页面专属的私有发现逻辑。
+        response = SourceDiscoveryService(
+            conn,
+            agent=agent,
+            web_search=(self._search_runtime.web_search if self._search_runtime else None),
+        ).discover(
+            SourceDiscoveryRequest(
+                entity_id=station["entity_id"],
+                target_period=intent.target_period,
+                metric=intent.metric,
+                source_policy=intent.source_policy,
+                query_hints=intent.query_hints,
+            ),
+            intent=intent,
+            on_event=emit,
         )
+        # TrustedSourceDiscovery 的公共输出是统一 CandidateSource；当前 webview
+        # 只接受 JSON，因此只在 API 边界显式序列化，内部不再传播私有字典。
+        qualified = [item.model_dump(mode="json") for item in response.candidates]
         if intent.source_policy == "official_only":
             for item in qualified:
                 if item.get("source_type") != "official":
@@ -787,7 +852,7 @@ class Api:
                     item["error"] = "用户要求仅官方来源"
             qualified = [item for item in qualified if item.get("source_type") == "official"]
         stored = SourceDiscoveryLedger(conn).record_candidates(
-            entity_id=station["entity_id"], gem_wiki_url=station.get("gem_wiki_url"), candidates=audited,
+            entity_id=station["entity_id"], gem_wiki_url=station.get("gem_wiki_url"), candidates=response.audited,
         )
         stored_by_url = {
             item.get("canonical_url") or item.get("url"): item
@@ -808,7 +873,21 @@ class Api:
             and item.get("status") != "rejected"
             and item.get("access_status") in {"reachable", "requires_browser"}
         ][:8]
-        return items, review_items, warnings, len(stored)
+        # C8：第三类是明确被排除或不可访问的审计项。它们必须可见，避免
+        # “没有结果”掩盖真实执行过的错误链接；但不能提供“使用此来源”
+        # 操作，更不能绕过相关性门槛进入合格候选。
+        review_urls = {
+            item.get("canonical_url") or item.get("url")
+            for item in review_items
+        }
+        excluded_items = [
+            item for item in stored
+            if (item.get("canonical_url") or item.get("url")) not in qualified_urls
+            and (item.get("canonical_url") or item.get("url")) not in review_urls
+        ][:12]
+        if on_event:
+            on_event("provider_diagnostics", {"providers": response.provider_diagnostics})
+        return items, review_items, excluded_items, response.warnings, len(stored), response.provider_diagnostics
 
     def create_intelligent_task(self, prompt: str, auto_execute: bool = False) -> Dict[str, Any]:
         """由一句自然语言创建“规划任务”，并自动完成 DeepSeek 联网候选发现。
@@ -883,10 +962,12 @@ class Api:
                     "deepseek_search_done": "DeepSeek 原生联网搜索完成",
                     "program_search": "正在执行程序控制的真实搜索",
                     "program_search_done": "程序控制的真实搜索完成",
+                    "evidence_document_resolution": "正在从入口页解析公开附件和下载链接",
+                    "evidence_document_resolution_done": "入口页附件解析完成",
                 }
                 self._write_intelligent_event(conn, plan_id, stage, labels.get(stage, stage), payload)
 
-            usable, review_items, warnings, audited_count = self._discover_trusted_source_candidates(
+            usable, review_items, excluded_items, warnings, audited_count, provider_diagnostics = self._discover_trusted_source_candidates(
                 conn, station=station, intent=intent, agent=agent, on_event=discovery_event,
             )
             status = "ready" if usable else "no_candidates"
@@ -905,11 +986,13 @@ class Api:
                  json.dumps(usable, ensure_ascii=False), now_iso(), plan_id),
             )
             self._write_intelligent_event(conn, plan_id, status, message,
-                                          {"audited": audited_count, "usable": len(usable), "warnings": warnings})
+                                          {"audited": audited_count, "usable": len(usable),
+                                           "review": len(review_items), "excluded": len(excluded_items), "warnings": warnings})
             conn.commit()
             return {"success": True, "plan_id": plan_id, "status": status, "llm_model": agent_model, "intent": intent.to_dict(),
                     "station": {"entity_id": station["entity_id"], "canonical_name": station["canonical_name"]},
-                    "items": usable, "review_items": review_items, "message": message}
+                    "items": usable, "review_items": review_items, "excluded_items": excluded_items,
+                    "provider_diagnostics": provider_diagnostics, "message": message}
         except DeepSeekAgentError as exc:
             error = str(exc)
         except Exception as exc:
@@ -971,9 +1054,62 @@ class Api:
         if result.get("success"):
             conn = self.get_db_connection()
             try:
+                # 智能规划阶段尚未创建正式 tasks，不能为方便审计而伪造
+                # SearchLead.task_id。用户确认 URL、正式任务已落库后，才把该
+                # 原始搜索线索和可尝试来源绑定到真实 task，供后续采集复用。
+                from hydro_platform.common.enums import ContentKind
+                from hydro_platform.discovery.search_lead_ledger import SearchLeadLedger
+                from hydro_platform.models.source_pipeline import CandidateSource
+                from hydro_platform.pipeline.source_attempt_ledger import SourceAttemptLedger
+
+                selected_url = selected.get("final_url") or selected.get("url")
+                metadata = selected.get("metadata") if isinstance(selected.get("metadata"), dict) else {}
+                title = selected.get("title") or selected.get("link_text") or selected_url
+                provider = str(
+                    metadata.get("search_provider")
+                    or metadata.get("search_engine")
+                    or selected.get("discovery_method")
+                    or "intelligent_plan"
+                )
+                query = str(metadata.get("query") or "智能任务已确认候选")
+                lead_id = None
+                if SearchLeadLedger.is_available(conn):
+                    lead_id = SearchLeadLedger(conn).record_results(
+                        task_id=result["task_id"],
+                        provider=provider,
+                        default_query=query,
+                        results=[{
+                            **selected,
+                            "url": selected_url,
+                            "canonical_url": selected_url,
+                            "title": title,
+                            "query": query,
+                            "search_provider": provider,
+                            "snippet": metadata.get("search_snippet") or selected.get("match_reason"),
+                        }],
+                    ).get(str(selected_url).rstrip("/").lower())
+                try:
+                    expected_kind = ContentKind(str(selected.get("expected_content_kind") or "any"))
+                except ValueError:
+                    expected_kind = ContentKind.ANY
+                candidate = CandidateSource(
+                    task_id=result["task_id"],
+                    lead_id=lead_id,
+                    url=str(selected_url),
+                    canonical_url=str(selected_url),
+                    title=str(title)[:500],
+                    publisher=selected.get("publisher") or selected.get("section_title"),
+                    source_type=str(selected.get("source_type") or "reference"),
+                    discovery_method=str(selected.get("discovery_method") or "intelligent_plan_selection"),
+                    expected_content_kind=expected_kind,
+                    priority_score=float(selected.get("priority_score") or selected.get("combined_score") or 0.0),
+                    metadata={**metadata, "intelligent_plan_id": plan_id, "user_confirmed": True},
+                )
+                if SourceAttemptLedger.is_available(conn):
+                    SourceAttemptLedger(conn).record_candidate(candidate)
                 conn.execute("UPDATE intelligent_task_plans SET status='collection_queued', updated_at=datetime('now') WHERE plan_id=?", (plan_id,))
                 self._write_intelligent_event(conn, plan_id, "collection_queued", "用户已确认候选，已创建正式采集任务",
-                                              {"task_id": result["task_id"], "url": selected.get("final_url") or selected.get("url")})
+                                              {"task_id": result["task_id"], "url": selected_url, "lead_id": lead_id})
                 conn.commit()
             finally:
                 conn.close()
@@ -1113,6 +1249,12 @@ class Api:
     def get_system_info(self) -> Dict[str, Any]:
         """系统信息。"""
         return self._read(lambda q: q.get_system_info())
+
+    def get_ocr_capabilities(self) -> Dict[str, Any]:
+        """返回当前机器的真实 OCR 依赖/引擎状态。"""
+        from hydro_platform.parsing.pdf_ocr import ocr_environment_report
+
+        return ocr_environment_report()
 
     def get_data_space_info(self) -> Dict[str, Any]:
         """只读返回数据空间状态，不在页面查询期间隐式执行迁移。
@@ -1859,21 +2001,10 @@ class Api:
                 "record_ids": list
             }
         """
-        from hydro_platform.app.writer import RecordWriter
-
-        conn = self.get_db_connection()
-        try:
-            writer = RecordWriter(conn)
-            result = writer.save_candidates(
-                candidates=candidates,
-                document_id=document_id,
-                source_id=source_id,
-                entity_id=entity_id,
-                task_id=task_id
-            )
-            return result
-        finally:
-            conn.close()
+        raise RuntimeError(
+            "旧候选写入入口已禁用：该路径会绕过 Validation/Evidence/Review/Promotion。"
+            "请使用 run_collection_task() 统一可信流水线。"
+        )
 
     def _legacy_guess_content_kind(self, file_path: str) -> ContentKind:
         """根据文件扩展名推断 ContentKind。"""
@@ -1924,7 +2055,11 @@ class Api:
         from hydro_platform.acquisition.router import AcquisitionRouter
         from hydro_platform.acquisition.http_client import HttpClient
         from hydro_platform.registry.source_registry import SourceRegistry
-        from hydro_platform.discovery.resolver import DiscoveryResolver
+        from hydro_platform.intelligence.source_discovery_service import (
+            SourceDiscoveryService,
+            TaskSourceDiscoveryAdapter,
+        )
+        from hydro_platform.config.llm_config import LLMConfig
         import os
 
         conn = self.get_db_connection()
@@ -1944,8 +2079,15 @@ class Api:
 
             # 2. 准备自动来源发现。真正解析延后到 Pipeline 领取任务之后执行，
             # 这样任务状态、审计与取消逻辑覆盖完整发现链路。
-            deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
-            resolver = DiscoveryResolver(conn, deepseek_api_key=deepseek_key)
+            # 后台与 GUI 从同一受保护配置读取 DeepSeek；未配置时仍可由统一
+            # 服务运行程序控制搜索、官网/GEM 与权威目录，不会降级到旧发现器。
+            deepseek = LLMConfig().get_deepseek_config() or {}
+            resolver = TaskSourceDiscoveryAdapter(SourceDiscoveryService(
+                conn,
+                deepseek_api_key=deepseek.get("api_key"),
+                deepseek_model=deepseek.get("model"),
+                web_search=(self._search_runtime.web_search if self._search_runtime else None),
+            ))
 
             class AutomaticSourceResolver:
                 """让 source_resolver 在历史来源后执行 Discovery 的空受控解析器。"""
@@ -2028,7 +2170,10 @@ class Api:
                 return {"success": False, "imported_count": 0, "skipped_count": 0,
                         "errors": ["CSV文件为空"], "details": []}
 
-            required = {"entity_id", "period_label", "generation_gwh"}
+            required = {
+                "entity_id", "period_label", "period_type", "metric",
+                "generation_gwh", "unit_raw", "value_type", "measurement_scope",
+            }
             columns = set(rows[0].keys())
             missing = sorted(required - columns)
             if missing:
@@ -2069,15 +2214,18 @@ class Api:
                         raise ValueError("必填字段为空")
                     if not period_label.isdigit() or len(period_label) != 4:
                         raise ValueError("period_label 必须是四位日历年")
-                    period_type = (row.get("period_type") or "calendar_year").strip()
-                    value_type = (row.get("value_type") or "actual").strip().casefold()
-                    measurement_scope = (row.get("measurement_scope") or "plant").strip().casefold()
+                    period_type = (row.get("period_type") or "").strip()
+                    metric = (row.get("metric") or "").strip().casefold()
+                    value_type = (row.get("value_type") or "").strip().casefold()
+                    measurement_scope = (row.get("measurement_scope") or "").strip().casefold()
                     if period_type != "calendar_year":
                         raise ValueError("CSV 导入只接受 calendar_year")
                     if value_type != "actual":
                         raise ValueError("CSV 导入不接受 forecast/estimate 等非实际值")
                     if measurement_scope != "plant":
                         raise ValueError("CSV 导入只接受 plant 单站口径")
+                    if metric != "gross_generation":
+                        raise ValueError("CSV 导入当前只接受 gross_generation 总发电量")
                     generation_gwh = float(raw_value)
                     if not math.isfinite(generation_gwh) or generation_gwh < 0:
                         raise ValueError("generation_gwh 必须是非负有限数字")
@@ -2090,7 +2238,7 @@ class Api:
                         raise ValueError(f"未知电站: {entity_id}")
 
                     value_raw = (row.get("value_raw") or raw_value).strip()
-                    unit_raw = (row.get("unit_raw") or "GWh").strip()
+                    unit_raw = (row.get("unit_raw") or "").strip()
                     valid_energy_units = {
                         "gwh", "mwh", "twh", "kwh", "亿千瓦时", "万千瓦时", "千瓦时"
                     }
@@ -2111,6 +2259,8 @@ class Api:
                         "period_type": period_type,
                         "value_type": value_type,
                         "measurement_scope": measurement_scope,
+                        "metric": metric,
+                        "normalized_unit": "gwh",
                         "generation_gwh": generation_gwh,
                         "value_raw": value_raw,
                         "unit_raw": unit_raw,
@@ -2159,6 +2309,8 @@ class Api:
                         period_type=period_type,
                         period_label=period_label,
                         generation_gwh=generation_gwh,
+                        metric=metric,
+                        normalized_unit="gwh",
                         value_type=value_type,
                         measurement_scope=measurement_scope,
                         value_raw=value_raw,
@@ -2172,13 +2324,15 @@ class Api:
                     conn.execute(
                         """INSERT INTO extraction_candidates
                         (candidate_id, task_id, entity_id, document_id, period_type, period_label,
-                         value_type, measurement_scope, generation_gwh, value_raw, unit_raw,
+                         value_type, measurement_scope, metric, normalized_unit,
+                         generation_gwh, value_raw, unit_raw,
                          snippet, extraction_method, extracted_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'csv_import', ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'csv_import', ?)
                         ON CONFLICT(candidate_id) DO UPDATE SET
                             task_id = COALESCE(extraction_candidates.task_id, excluded.task_id)""",
                         (candidate_id, task.task_id, entity_id, document_id, period_type, period_label,
-                         value_type, measurement_scope, generation_gwh, value_raw, unit_raw, snippet, now),
+                         value_type, measurement_scope, metric, "gwh", generation_gwh,
+                         value_raw, unit_raw, snippet, now),
                     )
                     conn.execute(
                         """INSERT INTO candidate_evidence(candidate_id, evidence_id)
@@ -2275,10 +2429,14 @@ class Api:
             return {"success": False, "error": "目标年份必须是四位年份", "items": []}
 
         deepseek = LLMConfig().get_deepseek_config()
-        if not deepseek or not deepseek.get("api_key"):
-            return {"success": False, "error": "未配置 DeepSeek API Key，请先在设置中配置并测试连接", "items": []}
-        agent_model = deepseek.get("model") or "deepseek-v4-flash"
-        agent = DeepSeekResponsesAgent(api_key=deepseek["api_key"], model=agent_model)
+        # DeepSeek 是一个增强通道，不是程序控制搜索的前置条件。未配置时，
+        # 统一服务仍会运行 Google/无密钥搜索、GEM/官网和权威目录，并明确
+        # 报告 DeepSeek 为 not_configured，而不是谎称“没有公开来源”。
+        agent_model = (deepseek or {}).get("model") or "deepseek-v4-flash"
+        agent = (
+            DeepSeekResponsesAgent(api_key=deepseek["api_key"], model=agent_model)
+            if deepseek and deepseek.get("api_key") else None
+        )
 
         conn = self.get_db_connection()
         try:
@@ -2291,7 +2449,7 @@ class Api:
                 return {"success": False, "error": f"未找到电站: {entity_id}", "items": []}
             station = dict(station)
             intent = self._station_search_intent(station, str(year))
-            items, review_items, warnings, audited_count = self._discover_trusted_source_candidates(
+            items, review_items, excluded_items, warnings, audited_count, provider_diagnostics = self._discover_trusted_source_candidates(
                 conn, station=station, intent=intent, agent=agent,
             )
             display_limit = max(1, min(int(limit), 10))
@@ -2309,8 +2467,12 @@ class Api:
                 message += " " + "；".join(warnings)
             return {
                 "success": True, "entity_id": entity_id, "entity_name": station["canonical_name"],
-                "target_period": str(year), "items": items, "review_items": review_items, "recommendation": recommendation,
-                "message": message, "search_channels": ["deepseek_native", "program_search", "gem_external"],
+                "target_period": str(year), "items": items, "review_items": review_items,
+                "excluded_items": excluded_items, "recommendation": recommendation,
+                "message": message,
+                "search_channels": ["official_gem", "authority", "sse_disclosure", "deepseek_native", "program_search"],
+                "deepseek_configured": bool(agent),
+                "provider_diagnostics": provider_diagnostics,
             }
         except Exception as exc:
             return {"success": False, "error": str(exc), "items": []}

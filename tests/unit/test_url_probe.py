@@ -20,7 +20,7 @@ class _HtmlResponse(_Response):
     encoding = "utf-8"
 
     def iter_content(self, chunk_size):
-        yield b"<html><head><title>Ignored</title></head><body>Three Gorges 2023 generation</body></html>"
+        yield b'<html><head><title>Ignored</title></head><body>Three Gorges 2023 generation<a href="/files/report-2023.pdf">Annual report PDF</a></body></html>'
 
 
 class _Utf8HtmlResponse(_Response):
@@ -29,6 +29,14 @@ class _Utf8HtmlResponse(_Response):
 
     def iter_content(self, chunk_size):
         yield "<html><body>三峡电站 2023 年全年发电量</body></html>".encode("utf-8")
+
+
+class _BrokenPdfResponse(_Response):
+    headers = {"Content-Type": "application/pdf"}
+    encoding = None
+
+    def iter_content(self, chunk_size):
+        yield b"%PDF-1.4\ninvalid truncated object table"
 
 
 class _Session:
@@ -80,6 +88,16 @@ def test_probe_marks_network_failure_unknown():
     assert result["status"] == "unavailable"
 
 
+def test_malformed_pdf_preview_does_not_abort_probe_batch():
+    probe = UrlProbe(session=_Session(_BrokenPdfResponse(200, "https://example.test/broken.pdf")))
+    result = probe.probe({"url": "https://example.test/broken.pdf", "metadata": {"verify_pdf_text": True}})
+
+    assert result["access_status"] == "reachable"
+    assert result["http_status"] == 200
+    assert result["metadata"].get("content_preview", "") == ""
+    assert result["status"] == "discovered"
+
+
 def test_probe_adds_bounded_html_preview_without_archiving_content():
     result = UrlProbe(session=_Session(_HtmlResponse(200, "https://example.test/report"))).probe(
         {"url": "https://example.test/report", "metadata": {"search_title": "Report"}}
@@ -87,6 +105,9 @@ def test_probe_adds_bounded_html_preview_without_archiving_content():
 
     assert "Three Gorges 2023 generation" in result["metadata"]["content_preview"]
     assert result["metadata"]["search_title"] == "Report"
+    assert result["metadata"]["discovered_links"] == [{
+        "url": "https://example.test/files/report-2023.pdf", "text": "Annual report PDF",
+    }]
 
 
 def test_probe_detects_utf8_html_when_server_uses_default_latin1_encoding():

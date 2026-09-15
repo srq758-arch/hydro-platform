@@ -7,12 +7,21 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Any, Callable
 
+from ..common.enums import SearchLeadStatus
+from ..discovery.evidence_document_resolver import EvidenceDocumentResolver
 from ..discovery.relevance import CandidateRelevanceVerifier
+from ..discovery.search_lead_ledger import SearchLeadLedger
 from ..discovery.url_probe import UrlProbe
 from ..reliability.scorer import ReliabilityScorer
+from ..models.source_pipeline import CandidateSource
+from ..pipeline.source_attempt_ledger import SourceAttemptLedger
+from ..pipeline.source_contract_adapter import normalize_candidate_sources
 from .deepseek_agent import DeepSeekAgentError, DeepSeekResponsesAgent, TaskIntent
+from .query_families import QueryFamilyPlanner
+from .search_aggregator import SearchAggregator
 from .web_search import WebSearchError, WebSearchProvider
 
 
@@ -27,24 +36,25 @@ class TrustedSourceDiscovery:
         url_probe: UrlProbe | None = None,
         scorer: ReliabilityScorer | None = None,
         verifier: CandidateRelevanceVerifier | None = None,
+        document_resolver: EvidenceDocumentResolver | None = None,
+        conn: sqlite3.Connection | None = None,
     ):
         self.agent = agent
         self.web_search = web_search or WebSearchProvider()
         self.url_probe = url_probe or UrlProbe()
         self.scorer = scorer or ReliabilityScorer()
         self.verifier = verifier or CandidateRelevanceVerifier()
+        self.document_resolver = document_resolver or EvidenceDocumentResolver()
+        self.conn = conn
 
-    @staticmethod
-    def _deduplicate(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        merged: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for candidate in candidates:
-            url = str(candidate.get("canonical_url") or candidate.get("url") or "").strip()
-            if not url or url in seen:
-                continue
-            seen.add(url)
-            merged.append({**candidate, "canonical_url": url})
-        return merged
+    @classmethod
+    def canonicalize_url(cls, value: str) -> str:
+        """兼容旧调用名；规范化唯一实现位于 SearchAggregator。"""
+        return SearchAggregator.canonicalize_url(value)
+
+    @classmethod
+    def _deduplicate(cls, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return SearchAggregator.merge(candidates)
 
     @staticmethod
     def _program_candidates(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -55,15 +65,16 @@ class TrustedSourceDiscovery:
         电站/年份/指标硬校验，且默认标为 reference，必须由用户核实后才可使用。
         """
         candidates: list[dict[str, Any]] = []
-        for source in results:
+        for rank, source in enumerate(results, start=1):
             url = str(source.get("url") or "").strip()
             if not url.startswith(("http://", "https://")):
                 continue
+            canonical_url = SearchAggregator.canonicalize_url(url)
             candidates.append({
                 "url": url,
-                "canonical_url": url,
+                "canonical_url": canonical_url,
                 "link_text": str(source.get("title") or url)[:500],
-                "section_title": str(source.get("publisher") or "程序联网搜索")[:300],
+                "section_title": str(source.get("publisher") or SearchAggregator.publisher_domain(canonical_url) or "程序联网搜索")[:300],
                 "source_type": "reference",
                 "document_type": "pdf" if url.lower().split("?", 1)[0].endswith(".pdf") else "html",
                 "discovery_method": "program_search_result",
@@ -73,6 +84,9 @@ class TrustedSourceDiscovery:
                     "search_title": str(source.get("title") or "")[:500],
                     "search_snippet": str(source.get("snippet") or "")[:1600],
                     "search_provider": str(source.get("search_engine") or "program_controlled_search"),
+                    "rank": rank,
+                    "publisher_domain": SearchAggregator.publisher_domain(canonical_url),
+                    "discovery_depth": 0,
                     "requires_manual_verification": True,
                 },
             })
@@ -84,8 +98,11 @@ class TrustedSourceDiscovery:
         intent: TaskIntent,
         station: dict[str, Any],
         gem_candidates: list[dict[str, Any]] | None = None,
+        supplemental_candidates: list[dict[str, Any]] | None = None,
+        task_id: str | None = None,
+        enabled_providers: set[str] | frozenset[str] | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    ) -> tuple[list[CandidateSource], list[dict[str, Any]], list[str]]:
         """返回 ``(qualified, audited, warnings)``。
 
         ``audited`` 保留不合格/不可访问候选供台账审计；只有 ``qualified`` 可以
@@ -93,16 +110,129 @@ class TrustedSourceDiscovery:
         """
         warnings: list[str] = []
         all_candidates: list[dict[str, Any]] = []
+        providers = set(enabled_providers or {
+            "sse_disclosure", "deepseek_native_web_search",
+            "program_controlled_search", "gem_external_link",
+        })
+        lead_by_url: dict[str, str] = {}
+        ledger: SearchLeadLedger | None = None
+        if self.conn is not None and task_id and SearchLeadLedger.is_available(self.conn):
+            # search_leads.task_id 有 FK。只有真实已落库任务才能留痕，规划页
+            # 仍走 source_discoveries，不能伪造尚未确认的采集任务。
+            exists = self.conn.execute(
+                "SELECT 1 FROM tasks WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if exists:
+                ledger = SearchLeadLedger(self.conn)
+
+        def record_leads(provider: str, values: list[dict[str, Any]], query: str = "") -> None:
+            if ledger is None or not values:
+                return
+            recorded = ledger.record_results(
+                task_id=task_id,
+                provider=provider,
+                default_query=query or (intent.query_hints[0] if intent.query_hints else "provider search"),
+                results=values,
+            )
+            for url, lead_id in recorded.items():
+                lead_by_url.setdefault(self.canonicalize_url(url), lead_id)
+
+        def with_lead(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            annotated: list[dict[str, Any]] = []
+            for value in values:
+                url = str(value.get("canonical_url") or value.get("final_url") or value.get("url") or "")
+                lead_id = lead_by_url.get(self.canonicalize_url(url))
+                annotated.append({**value, **({"lead_id": lead_id} if lead_id else {})})
+            return annotated
 
         def event(stage: str, payload: dict[str, Any]) -> None:
             if on_event:
                 on_event(stage, payload)
 
+        def program_search_with_bounded_retry() -> list[dict[str, Any]]:
+            """搜索为空/明显无关时只按规则补查一次。
+
+            失败改写只扩大“查询表达”，不生成 URL；网络异常（如 DNS、TLS、
+            超时或明确限流）不会继续轰击同一搜索服务。首次查询保持原有顺序，
+            保证历史调用、审计和缓存仍可复现。
+            """
+            attempted = tuple(intent.query_hints)
+            try:
+                initial = self.web_search.search(attempted)
+            except WebSearchError as exc:
+                diagnostics = getattr(self.web_search, "last_diagnostics", [])
+                has_provider_failure = any(
+                    isinstance(item, dict) and item.get("status") == "failed"
+                    for item in diagnostics if isinstance(diagnostics, list)
+                )
+                failure_code = "provider_failure" if has_provider_failure else "empty_results"
+                retry = QueryFamilyPlanner.rewrite_after_failure(
+                    intent=intent, station=station, attempted_queries=attempted,
+                    failure_code=failure_code,
+                    verified_domains=station.get("official_domains") or (),
+                )
+                if not retry:
+                    raise
+                retry_queries = tuple(item.query for item in retry)
+                event("program_search_retry", {
+                    "failure_code": failure_code,
+                    "queries": list(retry_queries),
+                    "families": [item.family for item in retry],
+                })
+                return self.web_search.search(retry_queries)
+            if initial:
+                # 搜索结果标题/摘要已经明确全部不命中目标实体、年份或指标时，
+                # 立即使用第二查询族；原始结果仍保留，后续会进入 audited 审计项。
+                raw_candidates = self._program_candidates(initial)
+                raw_relevance = [
+                    self.verifier.verify(
+                        candidate, station=station,
+                        target_period=intent.target_period, metric=intent.metric,
+                    )
+                    for candidate in raw_candidates
+                ]
+                if not raw_relevance or any(item.eligible for item in raw_relevance):
+                    return initial
+                failure_code = "irrelevant"
+                retry = QueryFamilyPlanner.rewrite_after_failure(
+                    intent=intent, station=station, attempted_queries=attempted,
+                    failure_code=failure_code,
+                    verified_domains=station.get("official_domains") or (),
+                )
+                if not retry:
+                    return initial
+                retry_queries = tuple(item.query for item in retry)
+                event("program_search_retry", {
+                    "failure_code": failure_code,
+                    "queries": list(retry_queries),
+                    "families": [item.family for item in retry],
+                    "preserved_initial_count": len(initial),
+                })
+                # 不丢弃首轮结果：第二轮只是补充召回，首轮无关网页仍会在
+                # audited 中显示其排除原因，便于用户判断搜索质量。
+                return list(initial) + list(self.web_search.search(retry_queries))
+            retry = QueryFamilyPlanner.rewrite_after_failure(
+                intent=intent, station=station, attempted_queries=attempted,
+                failure_code="empty_results",
+                verified_domains=station.get("official_domains") or (),
+            )
+            if not retry:
+                return initial
+            retry_queries = tuple(item.query for item in retry)
+            event("program_search_retry", {
+                "failure_code": "empty_results",
+                "queries": list(retry_queries),
+                "families": [item.family for item in retry],
+            })
+            return self.web_search.search(retry_queries)
+
         # 英文 seedlist 名称与当地报道的简称、运营主体之间常没有一一对应关系。
         # 在实际搜索之前，请 DeepSeek 仅规划两条补充检索词；模型不返回 URL，
         # 也不会削弱下方对电站/年份/年度口径的硬校验。
         planner = getattr(self.agent, "suggest_search_queries", None)
-        if callable(planner):
+        if getattr(self.agent, "enabled", True) and callable(planner) and (
+            {"sse_disclosure", "deepseek_native_web_search", "program_controlled_search"} & providers
+        ):
             try:
                 event("query_planning", {"base_queries": list(intent.query_hints)})
                 suggested = planner(intent=intent, station=station, limit=2)
@@ -129,44 +259,68 @@ class TrustedSourceDiscovery:
         # 中国上市运营主体的“发电量完成情况公告”由交易所发布原始 PDF。
         # 这是独立于普通网页搜索的官方通道；模型只给出代码线索，交易所目录
         # 与 PDF 正文才是最终证据。
-        if str(station.get("country") or "").strip().lower() == "china":
+        if "sse_disclosure" in providers and str(station.get("country") or "").strip().lower() == "china":
             issuer_planner = getattr(self.agent, "suggest_listed_issuers", None)
-            if callable(issuer_planner):
+            if getattr(self.agent, "enabled", True) and callable(issuer_planner):
                 try:
                     from .sse_disclosure import SseDisclosureProvider
                     event("official_disclosure_search", {})
                     issuers = issuer_planner(intent=intent, station=station)
                     if isinstance(issuers, list):
                         official = SseDisclosureProvider().discover(issuers=issuers, target_year=intent.target_period)
-                        all_candidates.extend(official)
+                        record_leads("sse_disclosure", official)
+                        all_candidates.extend(with_lead(official))
                         event("official_disclosure_search_done", {"count": len(official)})
                 except DeepSeekAgentError as exc:
                     warnings.append(f"上市公告主体识别不可用：{exc}")
 
         # 通道 A：DeepSeek 原生联网搜索。失败不阻断独立搜索通道。
-        try:
-            event("deepseek_search", {})
-            native = self.agent.search(intent=intent, station=station)
-            all_candidates.extend(native)
-            event("deepseek_search_done", {"count": len(native)})
-        except DeepSeekAgentError as exc:
-            warnings.append(f"DeepSeek 原生搜索不可用：{exc}")
+        if "deepseek_native_web_search" in providers:
+            if not getattr(self.agent, "enabled", True):
+                warnings.append("DeepSeek 原生搜索未配置；继续使用程序控制搜索")
+            else:
+                try:
+                    event("deepseek_search", {})
+                    native = self.agent.search(intent=intent, station=station)
+                    record_leads("deepseek_native_web_search", native)
+                    all_candidates.extend(with_lead(native))
+                    event("deepseek_search_done", {"count": len(native)})
+                except DeepSeekAgentError as exc:
+                    warnings.append(f"DeepSeek 原生搜索不可用：{exc}")
 
         # 通道 B：可审计的程序控制搜索，再由 DeepSeek 限定只能从真实结果中选择。
-        try:
-            event("program_search", {"queries": list(intent.query_hints)})
-            results = self.web_search.search(intent.query_hints)
-            event("program_search_done", {"count": len(results)})
-            # 先保存搜索引擎实际给出的 URL；模型仅能补充审核结论，不能作为
-            # 候选存在与否的唯一决定者。
-            all_candidates.extend(self._program_candidates(results))
-            evaluated = self.agent.evaluate_search_results(intent=intent, station=station, results=results)
-            all_candidates.extend(evaluated)
-        except (WebSearchError, DeepSeekAgentError) as exc:
-            warnings.append(f"程序搜索通道不可用：{exc}")
+        if "program_controlled_search" in providers:
+            try:
+                event("program_search", {"queries": list(intent.query_hints)})
+                # 始终走稳定的 ``search`` 入口，保证离线回放和第三方 provider
+                # 替身不会被新诊断接口绕过。内建 provider 会在同次调用记录诊断。
+                results = program_search_with_bounded_retry()
+                diagnostics = getattr(self.web_search, "last_diagnostics", [])
+                if not isinstance(diagnostics, list):
+                    diagnostics = []
+                search_event = {"count": len(results), "diagnostics": diagnostics}
+                metrics = getattr(self.web_search, "last_metrics", None)
+                if isinstance(metrics, dict) and metrics:
+                    search_event["metrics"] = metrics
+                event("program_search_done", search_event)
+                record_leads("program_controlled_search", results)
+                # 先保存搜索引擎实际给出的 URL；模型仅能补充审核结论，不能作为
+                # 候选存在与否的唯一决定者。
+                all_candidates.extend(with_lead(self._program_candidates(results)))
+                if getattr(self.agent, "enabled", True):
+                    evaluated = self.agent.evaluate_search_results(intent=intent, station=station, results=results)
+                    all_candidates.extend(with_lead(evaluated))
+            except (WebSearchError, DeepSeekAgentError) as exc:
+                warnings.append(f"程序搜索通道不可用：{exc}")
 
         # 通道 C：GEM 仅作为补充线索，不再单独形成“官方来源发现”的结果。
-        all_candidates.extend(gem_candidates or [])
+        # 官方站点模板、权威目录等补充候选不是搜索结果，不伪造 SearchLead；
+        # 它们仍须和其他通道走同样的 URL 预检及相关性硬校验。
+        all_candidates.extend(list(supplemental_candidates or []))
+        if "gem_external_link" in providers:
+            gem_values = list(gem_candidates or [])
+            record_leads("gem_external_link", gem_values, "GEM external link")
+            all_candidates.extend(with_lead(gem_values))
         merged = self._deduplicate(all_candidates)
         task = {
             "entity_id": station.get("entity_id"), "entity_name": station.get("canonical_name"),
@@ -174,6 +328,20 @@ class TrustedSourceDiscovery:
         }
         ranked = self.scorer.rank_sources(merged, task)
         probed = self.url_probe.probe_many(ranked)
+        # 搜索入口页本身可能没有数值，但其公开 PDF/Excel 附件才是真正证据。
+        # 附件扩展完全有界，并会独立再次预检；不能把父页的 HTTP 200 当作
+        # 附件可访问或可采集的证据。
+        attachment_candidates = self.document_resolver.expand(
+            probed, target_period=intent.target_period, metric=intent.metric,
+        )
+        if attachment_candidates:
+            event("evidence_document_resolution", {"parent_count": len(probed), "attachment_count": len(attachment_candidates)})
+            probed.extend(self.url_probe.probe_many(attachment_candidates))
+            event("evidence_document_resolution_done", {"attachment_count": len(attachment_candidates)})
+
+        # 预检后以最终重定向地址再次聚合。入口页与直链 PDF、或多个搜索引擎
+        # 指向同一最终文档时，只保留一个候选，但把入口/重定向地址留在别名中。
+        probed = SearchAggregator.merge(probed, prefer_final=True)
 
         qualified: list[dict[str, Any]] = []
         audited: list[dict[str, Any]] = []
@@ -202,4 +370,23 @@ class TrustedSourceDiscovery:
             audited.append(enriched)
 
         qualified.sort(key=lambda item: item.get("combined_score", 0.0), reverse=True)
-        return qualified[:10], audited, warnings
+        candidate_task_id = task_id or f"trusted::{station.get('entity_id', 'unknown')}::{intent.target_period}"
+        normalized = normalize_candidate_sources(qualified[:10], task_id=candidate_task_id)
+        if ledger is not None:
+            # 发现成功与实际下载是两件事：这里仅持久化已归一化候选，使
+            # SearchLead → CandidateSource 可以审计；编排器实际访问 URL 时
+            # 才会创建 SourceAttempt 并推进候选状态。
+            if SourceAttemptLedger.is_available(self.conn):
+                candidate_ledger = SourceAttemptLedger(self.conn)
+                for candidate in normalized:
+                    candidate_ledger.record_candidate(candidate)
+            rejected_ids = [
+                str(item.get("lead_id")) for item in audited
+                if item.get("lead_id") and item.get("status") == "ineligible"
+            ]
+            ledger.update_status(rejected_ids, SearchLeadStatus.REJECTED)
+            ledger.update_status(
+                [str(item.lead_id) for item in normalized if item.lead_id],
+                SearchLeadStatus.NORMALIZED,
+            )
+        return normalized, audited, warnings

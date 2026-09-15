@@ -8,7 +8,9 @@ year 不符、容量-发电量冲突、重复、低置信度进复核；以及 P
 from __future__ import annotations
 
 from hydro_platform.common.enums import (
+    GenerationMetric,
     MeasurementScope,
+    NormalizedEnergyUnit,
     PeriodType,
     ProjectStatus,
     Severity,
@@ -32,6 +34,9 @@ def _clean_actual(**over) -> ExtractionCandidate:
         period_type=PeriodType.CALENDAR_YEAR,
         period_label="2023",
         generation_gwh=100.0,
+        metric=GenerationMetric.GROSS_GENERATION,
+        normalized_unit=NormalizedEnergyUnit.GWH,
+        unit_raw="GWh",
         value_type=ValueType.ACTUAL,
         measurement_scope=MeasurementScope.PLANT,
         confidence=0.9,
@@ -97,6 +102,13 @@ def test_year_match_no_issue():
 def test_fiscal_year_flagged():
     res = validate_candidate(_clean_actual(period_type=PeriodType.FISCAL_YEAR))
     assert "YEAR_MISMATCH" in _codes(res)
+
+
+def test_ambiguous_year_without_full_year_clue_is_flagged():
+    cand = _clean_actual(flags=["PERIOD_UNCLEAR"])
+    res = validate_candidate(cand)
+    assert not res.passed
+    assert "PERIOD_AMBIGUOUS" in _codes(res)
 
 
 def test_unit_not_energy_flag_becomes_capacity_conflict():

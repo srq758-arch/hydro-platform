@@ -1,0 +1,5 @@
+-- v13 由 migrations.py 逐表、逐列幂等执行。
+--
+-- 原因：documents 与 extraction_candidates 已存在于不同历史版本，SQLite
+-- 不支持 ADD COLUMN IF NOT EXISTS。执行器必须先检测列，再添加可空的
+-- source_attempt_id / lineage_hash，且不得根据旧 URL 猜测历史父子关系。

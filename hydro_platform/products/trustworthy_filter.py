@@ -26,10 +26,39 @@ class TrustworthyFilter:
     DEFAULT_CONFIDENCE_THRESHOLD = 0.7
 
     @staticmethod
+    def get_sql_join_clause(
+        *,
+        table_alias: str = "g",
+        station_alias: str = "s",
+    ) -> str:
+        """返回正式记录到候选、证据、文档的完整可信链 JOIN。"""
+        return f"""
+            JOIN extraction_candidates c
+              ON c.candidate_id = {table_alias}.candidate_id
+             AND c.entity_id = {table_alias}.entity_id
+             AND c.period_type = {table_alias}.period_type
+             AND c.period_label = {table_alias}.period_label
+             AND c.value_type = {table_alias}.value_type
+             AND c.measurement_scope = {table_alias}.measurement_scope
+             AND c.metric = {table_alias}.metric
+             AND c.normalized_unit = {table_alias}.normalized_unit
+             AND c.generation_gwh = {table_alias}.generation_gwh
+            JOIN candidate_evidence ce
+              ON ce.candidate_id = c.candidate_id
+             AND ce.evidence_id = {table_alias}.evidence_id
+            JOIN evidence e ON e.evidence_id = {table_alias}.evidence_id
+            JOIN documents d
+              ON d.document_id = c.document_id
+             AND d.document_id = e.document_id
+             AND d.content_hash = e.content_hash
+        """
+
+    @staticmethod
     def get_sql_where_clause(
         *,
         year: Optional[str] = None,
         country: Optional[str] = None,
+        entity_id: Optional[str] = None,
         confidence_threshold: Optional[float] = None,
         table_alias: str = "g"
     ) -> tuple[str, list]:
@@ -52,17 +81,22 @@ class TrustworthyFilter:
             f"{table_alias}.value_type = ?",
             f"{table_alias}.period_type = ?",
             f"{table_alias}.measurement_scope = ?",
+            f"{table_alias}.metric = ?",
+            f"{table_alias}.normalized_unit = ?",
             f"{table_alias}.validation_status = ?",
             f"{table_alias}.publication_status = ?",
             f"{table_alias}.review_status = ?",
             f"{table_alias}.evidence_id IS NOT NULL",
-            f"({table_alias}.confidence IS NULL OR {table_alias}.confidence >= ?)",
+            # 未知置信度不是高置信度。NULL 必须留在工作区，不能进入可信产品。
+            f"{table_alias}.confidence >= ?",
         ]
 
         params = [
             'actual',           # value_type
             'calendar_year',    # period_type
             'plant',            # measurement_scope
+            'gross_generation', # metric
+            'gwh',              # normalized_unit
             'passed',           # validation_status
             'publishable',      # publication_status
             'approved',         # review_status
@@ -79,6 +113,10 @@ class TrustworthyFilter:
             conditions.append("s.country = ?")
             params.append(country)
 
+        if entity_id:
+            conditions.append(f"{table_alias}.entity_id = ?")
+            params.append(entity_id)
+
         where_clause = " AND ".join(conditions)
         return where_clause, params
 
@@ -88,6 +126,7 @@ class TrustworthyFilter:
         *,
         year: Optional[str] = None,
         country: Optional[str] = None,
+        entity_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
         confidence_threshold: Optional[float] = None
@@ -108,6 +147,7 @@ class TrustworthyFilter:
         where_clause, params = TrustworthyFilter.get_sql_where_clause(
             year=year,
             country=country,
+            entity_id=entity_id,
             confidence_threshold=confidence_threshold,
             table_alias="g"
         )
@@ -118,32 +158,25 @@ class TrustworthyFilter:
                 g.entity_id,
                 s.canonical_name,
                 s.country,
+                g.period_label,
                 g.period_label AS year,
+                g.period_type,
+                g.value_type,
+                g.measurement_scope,
+                g.metric,
+                g.normalized_unit,
                 g.generation_gwh,
                 g.confidence,
                 g.value_raw,
                 g.unit_raw,
+                g.source_id,
                 g.evidence_id,
                 g.validation_status,
                 g.review_status,
                 g.publication_status
             FROM generation_records g
             JOIN stations s ON g.entity_id = s.entity_id
-            JOIN extraction_candidates c
-              ON c.candidate_id = g.candidate_id
-             AND c.entity_id = g.entity_id
-             AND c.period_type = g.period_type
-             AND c.period_label = g.period_label
-             AND c.value_type = g.value_type
-             AND c.measurement_scope = g.measurement_scope
-             AND c.generation_gwh = g.generation_gwh
-            JOIN candidate_evidence ce
-              ON ce.candidate_id = c.candidate_id AND ce.evidence_id = g.evidence_id
-            JOIN evidence e ON e.evidence_id = g.evidence_id
-            JOIN documents d
-              ON d.document_id = c.document_id
-             AND d.document_id = e.document_id
-             AND d.content_hash = e.content_hash
+            {TrustworthyFilter.get_sql_join_clause(table_alias="g", station_alias="s")}
             WHERE {where_clause}
             ORDER BY g.generation_gwh DESC
             LIMIT ? OFFSET ?
@@ -158,6 +191,7 @@ class TrustworthyFilter:
         *,
         year: Optional[str] = None,
         country: Optional[str] = None,
+        entity_id: Optional[str] = None,
         confidence_threshold: Optional[float] = None
     ) -> int:
         """统计符合可信标准的记录数量。
@@ -174,6 +208,7 @@ class TrustworthyFilter:
         where_clause, params = TrustworthyFilter.get_sql_where_clause(
             year=year,
             country=country,
+            entity_id=entity_id,
             confidence_threshold=confidence_threshold,
             table_alias="g"
         )
@@ -182,21 +217,7 @@ class TrustworthyFilter:
             SELECT COUNT(*) as total
             FROM generation_records g
             JOIN stations s ON g.entity_id = s.entity_id
-            JOIN extraction_candidates c
-              ON c.candidate_id = g.candidate_id
-             AND c.entity_id = g.entity_id
-             AND c.period_type = g.period_type
-             AND c.period_label = g.period_label
-             AND c.value_type = g.value_type
-             AND c.measurement_scope = g.measurement_scope
-             AND c.generation_gwh = g.generation_gwh
-            JOIN candidate_evidence ce
-              ON ce.candidate_id = c.candidate_id AND ce.evidence_id = g.evidence_id
-            JOIN evidence e ON e.evidence_id = g.evidence_id
-            JOIN documents d
-              ON d.document_id = c.document_id
-             AND d.document_id = e.document_id
-             AND d.content_hash = e.content_hash
+            {TrustworthyFilter.get_sql_join_clause(table_alias="g", station_alias="s")}
             WHERE {where_clause}
         """
 
@@ -225,6 +246,12 @@ class TrustworthyFilter:
         if record.get('measurement_scope') != 'plant':
             violations.append(f"measurement_scope={record.get('measurement_scope')}，非plant")
 
+        if record.get('metric') != 'gross_generation':
+            violations.append(f"metric={record.get('metric')}，非gross_generation")
+
+        if record.get('normalized_unit') != 'gwh':
+            violations.append(f"normalized_unit={record.get('normalized_unit')}，非gwh")
+
         if record.get('validation_status') != 'passed':
             violations.append(f"validation_status={record.get('validation_status')}，未通过校验")
 
@@ -238,7 +265,9 @@ class TrustworthyFilter:
             violations.append("缺少evidence_id")
 
         confidence = record.get('confidence')
-        if confidence is not None and confidence < TrustworthyFilter.DEFAULT_CONFIDENCE_THRESHOLD:
+        if confidence is None:
+            violations.append("confidence 为空，无法进入可信数据")
+        elif confidence < TrustworthyFilter.DEFAULT_CONFIDENCE_THRESHOLD:
             violations.append(f"confidence={confidence}，低于阈值{TrustworthyFilter.DEFAULT_CONFIDENCE_THRESHOLD}")
 
         is_trustworthy = len(violations) == 0

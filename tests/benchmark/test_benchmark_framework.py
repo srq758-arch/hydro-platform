@@ -111,7 +111,7 @@ def test_evaluator():
     print("测试2通过")
 
 
-def test_report_generation():
+def test_report_generation(tmp_path):
     """测试3：报告生成"""
     print("\n=== 测试3：报告生成 ===")
 
@@ -135,7 +135,7 @@ def test_report_generation():
     )
 
     generator = ReportGenerator()
-    output_path = Path(__file__).parent / "reports" / "test_report.md"
+    output_path = tmp_path / "test_report.md"
     generator.generate_markdown(report, output_path)
 
     print(f"报告已生成: {output_path}")

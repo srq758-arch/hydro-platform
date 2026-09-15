@@ -31,6 +31,8 @@ def create_candidate_with_evidence(
     period_label: str,
     value_type: str,
     measurement_scope: str,
+    metric: Optional[str] = None,
+    normalized_unit: Optional[str] = None,
     generation_gwh: Optional[float] = None,
     value_raw: Optional[str] = None,
     unit_raw: Optional[str] = None,
@@ -88,14 +90,14 @@ def create_candidate_with_evidence(
         INSERT INTO extraction_candidates (
             candidate_id, task_id, entity_id, document_id,
             period_type, period_label, value_type, measurement_scope,
-            generation_gwh, value_raw, unit_raw, snippet,
+            metric, normalized_unit, generation_gwh, value_raw, unit_raw, snippet,
             extraction_method, extracted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(candidate_id) DO NOTHING
     """, (
         candidate_id, task_id, entity_id, document_id,
         period_type, period_label, value_type, measurement_scope,
-        generation_gwh, value_raw, unit_raw, snippet,
+        metric, normalized_unit, generation_gwh, value_raw, unit_raw, snippet,
         extraction_method, now_iso()
     ))
 
@@ -236,81 +238,11 @@ def promote_candidate_to_generation_record(
     Raises:
         CandidateEvidenceError: 如果候选不存在或证据缺失
     """
-    # 获取候选及其证据
-    candidate = get_candidate_with_evidence(conn, candidate_id)
-
-    if not candidate:
-        raise CandidateEvidenceError(f"候选 {candidate_id} 不存在")
-
-    if not candidate['evidence_ids']:
-        raise CandidateEvidenceError(
-            f"候选 {candidate_id} 未关联证据，无法升级"
-        )
-
-    # 使用第一个证据作为主证据
-    primary_evidence_id = candidate['evidence_ids'][0]
-
-    # 插入 generation_records
-    cursor = conn.execute("""
-        INSERT INTO generation_records (
-            entity_id, period_type, period_label,
-            generation_gwh, value_type, measurement_scope,
-            unit_raw, value_raw, source_id, task_id,
-            evidence_id, candidate_id,
-            validation_status, review_status, publication_status,
-            created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        candidate['entity_id'],
-        candidate['period_type'],
-        candidate['period_label'],
-        candidate['generation_gwh'],
-        candidate['value_type'],
-        candidate['measurement_scope'],
-        candidate['unit_raw'],
-        candidate['value_raw'],
-        source_id,
-        task_id or candidate['task_id'],
-        primary_evidence_id,
-        candidate_id,  # 不可变关联
-        'passed',
-        'approved',
-        'publishable',
-        now_iso(),
-        now_iso()
-    ))
-
-    record_id = cursor.lastrowid
-
-    # 记录变更历史
-    conn.execute("""
-        INSERT INTO generation_record_history (
-            history_id, record_id,
-            new_generation_gwh, new_candidate_id, new_evidence_id,
-            new_publication_status,
-            change_type, reason, changed_by, changed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        f"promote_{record_id}_{now_iso()}",
-        record_id,
-        candidate['generation_gwh'],
-        candidate_id,
-        primary_evidence_id,
-        'publishable',
-        'promoted',
-        f"从候选 {candidate_id} 升级",
-        'system',
-        now_iso()
-    ))
-
-    conn.commit()
-
-    logger.info(
-        f"候选 {candidate_id} 升级为正式记录 {record_id}，"
-        f"证据={primary_evidence_id}"
+    # V5.2-A：保留名称以便陈旧调用明确失败。该旧函数未携带 Validation、
+    # Review 与审批版本，不能再作为正式写入路径。
+    raise CandidateEvidenceError(
+        "旧候选升级入口已禁用；请使用 lifecycle.promotion.promote_candidate"
     )
-
-    return record_id
 
 
 def verify_generation_record_traceability(

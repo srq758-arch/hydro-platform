@@ -13,14 +13,16 @@ from __future__ import annotations
 
 import re
 
-from ..common.enums import MeasurementScope, PeriodType, ValueType
+from ..common.enums import MeasurementScope, NormalizedEnergyUnit, PeriodType, ValueType
 from ..models.candidate import ExtractionCandidate
 from ..parsing.content import ParsedContent, Table
 from .patterns import (
     detect_period_type,
+    detect_metric_clue,
     detect_scope_clue,
     detect_value_type_clue,
     find_years,
+    has_explicit_full_year_clue,
 )
 from .units import parse_unit
 
@@ -101,13 +103,20 @@ def _build_candidate(
 
     vt_clue = detect_value_type_clue(context)
     scope_clue = detect_scope_clue(context)
+    metric_clue = detect_metric_clue(context)
     period_type = detect_period_type(context) if year else None
 
     flags = _flags_for_unit(up)
+    if metric_clue.metric.value == "unknown":
+        flags.append("METRIC_UNCLEAR")
     if period_type == PeriodType.QUARTER:
         flags.append("PERIOD_QUARTER")
     if period_type == PeriodType.FISCAL_YEAR:
         flags.append("PERIOD_FISCAL")
+    if period_type == PeriodType.CALENDAR_YEAR and year and not has_explicit_full_year_clue(context):
+        # 单独出现“2024 年发电量/完成发电量”不能证明是全年值；保留候选，
+        # 但交给 Validation/Promotion 强制人工确认，避免阶段性累计值冒充全年。
+        flags.append("PERIOD_UNCLEAR")
     if vt_clue.value_type == ValueType.FORECAST:
         flags.append("FORECAST_SUSPECT")
     if scope_clue.scope in (MeasurementScope.REGION, MeasurementScope.COMPLEX):
@@ -118,6 +127,8 @@ def _build_candidate(
         period_type=period_type,
         period_label=year,
         generation_gwh=gwh,
+        metric=metric_clue.metric,
+        normalized_unit=NormalizedEnergyUnit.GWH if gwh is not None else None,
         value_type=vt_clue.value_type,
         measurement_scope=scope_clue.scope,
         value_raw=value_str,
@@ -194,8 +205,10 @@ def _extract_from_table(
     task_id: str | None,
     source_id: str | None,
     entity_names: tuple[str, ...] | None = None,
+    locator_prefix: str | None = None,
 ) -> list[ExtractionCandidate]:
     out: list[ExtractionCandidate] = []
+    table_locator = locator_prefix or f"table[{idx}]"
     header_text = " ".join(table.headers or [])
     for r, row in enumerate(table.rows):
         row_text = " ".join(row)
@@ -206,7 +219,7 @@ def _extract_from_table(
             entity_id=entity_id,
             task_id=task_id,
             source_id=source_id,
-            locator=f"table[{idx}].row[{r}]",
+            locator=f"{table_locator}.row[{r}]",
         )
         out.extend(subs)
 
@@ -244,7 +257,7 @@ def _extract_from_table(
                     entity_id=entity_id,
                     task_id=task_id,
                     source_id=source_id,
-                    locator=f"table[{idx}].row[{r}].col[{col}]",
+                    locator=f"{table_locator}.row[{r}].col[{col}]",
                 )
             )
     return out
@@ -257,6 +270,7 @@ def extract_candidates(
     task_id: str | None = None,
     source_id: str | None = None,
     entity_names: tuple[str, ...] | None = None,
+    text_locator: str = "text",
 ) -> list[ExtractionCandidate]:
     """从 ParsedContent 抽取全部候选（正文 + 各表格）。解析失败则返回空列表。"""
     if not parsed.ok:
@@ -265,10 +279,22 @@ def extract_candidates(
     candidates.extend(
         extract_from_text(
             parsed.text, entity_id=entity_id, task_id=task_id, source_id=source_id,
-            locator="text",
+            locator=text_locator,
         )
     )
+    table_pages = parsed.meta.get("table_pages") if isinstance(parsed.meta, dict) else None
+    table_page_spans = parsed.meta.get("table_page_spans") if isinstance(parsed.meta, dict) else None
     for idx, table in enumerate(parsed.tables):
+        page_number = table_pages[idx] if isinstance(table_pages, list) and idx < len(table_pages) else None
+        page_span = (
+            table_page_spans[idx]
+            if isinstance(table_page_spans, list) and idx < len(table_page_spans)
+            else None
+        )
+        if isinstance(page_span, (list, tuple)) and len(page_span) == 2 and page_span[0] != page_span[1]:
+            locator_prefix = f"page[{page_span[0]}-{page_span[1]}].table[{idx}]"
+        else:
+            locator_prefix = f"page[{page_number}].table[{idx}]" if page_number else None
         candidates.extend(
             _extract_from_table(
                 table,
@@ -277,6 +303,7 @@ def extract_candidates(
                 task_id=task_id,
                 source_id=source_id,
                 entity_names=entity_names,
+                locator_prefix=locator_prefix,
             )
         )
     return candidates

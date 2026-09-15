@@ -7,7 +7,7 @@ from hydro_platform.models.candidate import ExtractionCandidate
 from hydro_platform.review.queue import ReviewQueue
 
 
-def _candidate(db, candidate_id: str, value: float) -> ExtractionCandidate:
+def _candidate(db, candidate_id: str, value: float) -> tuple[ExtractionCandidate, str]:
     now = now_iso()
     db.execute(
         "INSERT INTO stations(entity_id, canonical_name, country) VALUES ('conflict-station', 'Conflict', 'CN')",
@@ -28,7 +28,26 @@ def _candidate(db, candidate_id: str, value: float) -> ExtractionCandidate:
         VALUES (?, 'conflict-station', ?, 'calendar_year', '2024', 'actual', 'plant', ?, ?)""",
         (candidate_id, f"doc-{candidate_id}", value, now),
     )
-    return ExtractionCandidate(
+    evidence_id = f"evidence-{candidate_id}"
+    db.execute(
+        """INSERT INTO evidence
+        (evidence_id, source_id, document_id, content_hash, fact_type, fact_key,
+         snippet, confidence, created_at)
+        VALUES (?, 'conflict-source', ?, ?, 'generation', ?, ?, 0.8, ?)""",
+        (
+            evidence_id,
+            f"doc-{candidate_id}",
+            f"hash-{candidate_id}",
+            "conflict-station::calendar_year::2024::actual::plant",
+            f"2024 annual generation {value} GWh",
+            now,
+        ),
+    )
+    db.execute(
+        "INSERT INTO candidate_evidence(candidate_id, evidence_id) VALUES (?, ?)",
+        (candidate_id, evidence_id),
+    )
+    candidate = ExtractionCandidate(
         candidate_id=candidate_id,
         entity_id="conflict-station",
         period_type="calendar_year",
@@ -40,17 +59,18 @@ def _candidate(db, candidate_id: str, value: float) -> ExtractionCandidate:
         unit_raw="GWh",
         source_id="conflict-source",
     )
+    return candidate, evidence_id
 
 
 def test_conflicting_candidates_get_separate_review_items(db):
-    first = _candidate(db, "conflict-candidate-1", 100)
-    second = _candidate(db, "conflict-candidate-2", 200)
+    first, first_evidence = _candidate(db, "conflict-candidate-1", 100)
+    second, second_evidence = _candidate(db, "conflict-candidate-2", 200)
     queue = ReviewQueue(db)
     validation = ValidationResult()
     validation.add_issue("DUPLICATE_RECORD", "same fact key", Severity.MEDIUM)
 
-    first_review = queue.submit(first, validation, evidence_ids=[])
-    second_review = queue.submit(second, validation, evidence_ids=[])
+    first_review = queue.submit(first, validation, evidence_ids=[first_evidence])
+    second_review = queue.submit(second, validation, evidence_ids=[second_evidence])
     db.commit()
 
     rows = db.execute(

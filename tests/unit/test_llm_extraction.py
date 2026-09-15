@@ -51,6 +51,34 @@ def test_valid_json_yields_candidate():
     assert c.period_type == PeriodType.CALENDAR_YEAR
     assert c.extractor == LLM_EXTRACTOR_VERSION
     assert "LLM_SOURCED" in c.flags
+    assert "PERIOD_UNCLEAR" in c.flags
+
+
+def test_llm_full_year_snippet_is_not_period_ambiguous():
+    provider = FakeProvider(
+        _payload(snippet="2023 年全年总发电量 12.5 亿千瓦时")
+    )
+    candidate = llm_extract("正文", provider, entity_id="e1")[0]
+    assert "PERIOD_UNCLEAR" not in candidate.flags
+
+
+def test_llm_power_unit_cannot_be_claimed_as_energy():
+    candidate = llm_extract(
+        "正文",
+        FakeProvider(_payload(unit_raw="MW", normalized_unit="gwh")),
+        entity_id="e1",
+    )[0]
+    assert "UNIT_NOT_ENERGY" in candidate.flags
+    assert "CAPACITY_SUSPECT" in candidate.flags
+
+
+def test_llm_missing_unit_is_explicitly_unclear():
+    candidate = llm_extract(
+        "正文",
+        FakeProvider(_payload(unit_raw=None, normalized_unit=None)),
+        entity_id="e1",
+    )[0]
+    assert "UNIT_UNCLEAR" in candidate.flags
 
 
 def test_code_fence_is_stripped():

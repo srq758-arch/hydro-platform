@@ -151,7 +151,7 @@ class GoogleSearchDiscovery:
 
         return ' '.join(terms)
 
-    def _call_google_api(self, query: str, limit: int) -> List[dict]:
+    def _call_google_api(self, query: str, limit: int, *, timeout: float | None = None) -> List[dict]:
         """调用Google Custom Search API
 
         Args:
@@ -175,7 +175,7 @@ class GoogleSearchDiscovery:
             'num': min(limit, 10)  # API限制最多10条
         }
 
-        response = requests.get(self.base_url, params=params, timeout=10)
+        response = requests.get(self.base_url, params=params, timeout=timeout or 10)
         response.raise_for_status()
 
         data = response.json()

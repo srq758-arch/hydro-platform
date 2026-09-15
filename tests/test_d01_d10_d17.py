@@ -81,7 +81,7 @@ class TestD01_UserSpecifiedSource:
         # 验证：应该直接返回用户指定的来源
         assert len(sources) == 1
         assert sources[0].url == "https://example.com/manual-report.pdf"
-        assert sources[0].title == "用户手动指定"
+        assert sources[0].title == "用户指定来源"
 
         conn.close()
 
@@ -157,7 +157,7 @@ class TestD01_UserSpecifiedSource:
         # 如果没有Discovery结果，sources可能为空或来自fallback
         # 关键是：不应该有"用户手动指定"标记
         if sources:
-            assert sources[0].title != "用户手动指定"
+            assert sources[0].title != "用户指定来源"
 
         conn.close()
 

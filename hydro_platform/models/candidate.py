@@ -10,7 +10,13 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..common.enums import MeasurementScope, PeriodType, ValueType
+from ..common.enums import (
+    GenerationMetric,
+    MeasurementScope,
+    NormalizedEnergyUnit,
+    PeriodType,
+    ValueType,
+)
 
 
 class ExtractionCandidate(BaseModel):
@@ -25,6 +31,8 @@ class ExtractionCandidate(BaseModel):
     period_type: PeriodType | None = None
     period_label: str | None = None          # 如 "2024"、"2024-Q1"
     generation_gwh: float | None = None      # 已归一到 GWh 的值（可空）
+    metric: GenerationMetric | None = None
+    normalized_unit: NormalizedEnergyUnit | None = None
 
     value_type: ValueType | None = None
     measurement_scope: MeasurementScope | None = None

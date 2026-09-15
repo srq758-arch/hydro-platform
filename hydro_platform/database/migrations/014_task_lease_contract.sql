@@ -1,0 +1,5 @@
+-- v14 由 migrations.py 以逐列幂等方式执行。
+--
+-- SQLite 不支持 ADD COLUMN IF NOT EXISTS；执行器会补齐 tasks.worker_id、
+-- tasks.lease_expires_at、tasks.heartbeat_at 以及 idx_tasks_running_lease，
+-- 且绝不回填、重置或猜测任何历史任务状态。
