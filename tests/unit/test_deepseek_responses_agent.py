@@ -89,3 +89,34 @@ def test_agent_query_planner_returns_only_short_non_url_hints():
     )
 
     assert hints == ("三峡工程 2024 年全年发电量", "中国长江电力 2024 年年度报告 三峡电站")
+
+
+def test_agent_retries_empty_or_malformed_response_once():
+    """暂态空 output 只重试一次，不能无限请求或静默成功。"""
+    calls = []
+    replies = iter([
+        {"output": []},
+        {"output_text": json.dumps({"candidates": [{
+            "url": "https://example.gov/report-2024.pdf",
+            "title": "2024 annual report",
+            "publisher": "Example Authority",
+            "document_type": "pdf",
+            "source_type": "authority",
+            "reason": "target year and annual generation",
+        }]})},
+    ])
+
+    def post(_url, **kwargs):
+        calls.append(kwargs["json"])
+        return _Response(next(replies))
+
+    agent = DeepSeekResponsesAgent(api_key="test-key", model="deepseek-v4-flash", post=post)
+    candidates = agent.search(
+        intent=TaskIntent(station_name="Example Dam", target_period="2024"),
+        station={"canonical_name": "Example Dam", "country": "Exampleland"},
+    )
+
+    assert len(calls) == 2
+    assert calls[1]["instructions"] != calls[0]["instructions"]
+    assert "JSON" in calls[1]["instructions"]
+    assert candidates[0]["url"] == "https://example.gov/report-2024.pdf"

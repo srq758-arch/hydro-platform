@@ -284,33 +284,50 @@ class DeepSeekResponsesAgent:
         return candidates
 
     def _json_response(self, *, instructions: str, input_text: str, use_web_search: bool) -> Any:
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "instructions": instructions,
-            "input": input_text,
-            "temperature": 0.1,
-            "max_output_tokens": 1800,
-            # Responses API 支持 JSON 输出；不用自由文本作为任务机器接口。
-            "text": {"format": {"type": "json_object"}},
-        }
-        if use_web_search:
-            payload["tools"] = [{"type": "web_search"}]
-            payload["tool_choice"] = {"type": "web_search"}
-        try:
-            response = self._post(
-                f"{self.base_url}/responses",
-                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-                json=payload,
-                timeout=75,
-            )
-            response.raise_for_status()
-            payload_out = response.json()
-        except requests.RequestException as exc:
-            raise DeepSeekAgentError(f"DeepSeek 请求失败：{exc.__class__.__name__}") from exc
-        except (TypeError, ValueError) as exc:
-            raise DeepSeekAgentError("DeepSeek 返回内容无法解析") from exc
-        text = self._output_text(payload_out)
-        return self._decode_json(text)
+        # Responses API 偶发返回空 output、截断 JSON 或暂态网关错误。只做一次
+        # 有界重试：避免把模型异常放大成无限请求，也不把“合法但为空的候选数组”
+        # 猜测成成功结果。明确的 4xx（429 除外）直接交给上层降级诊断。
+        max_attempts = 2
+        retry_hint = ""
+        for attempt in range(max_attempts):
+            payload: dict[str, Any] = {
+                "model": self.model,
+                "instructions": instructions + retry_hint,
+                "input": input_text,
+                "temperature": 0.1,
+                "max_output_tokens": 1800,
+                # Responses API 支持 JSON 输出；不用自由文本作为任务机器接口。
+                "text": {"format": {"type": "json_object"}},
+            }
+            if use_web_search:
+                payload["tools"] = [{"type": "web_search"}]
+                payload["tool_choice"] = {"type": "web_search"}
+            try:
+                response = self._post(
+                    f"{self.base_url}/responses",
+                    headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=75,
+                )
+                response.raise_for_status()
+                payload_out = response.json()
+                text = self._output_text(payload_out)
+                return self._decode_json(text)
+            except requests.RequestException as exc:
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                retryable = status is None or status in {408, 429} or status >= 500
+                if attempt + 1 >= max_attempts or not retryable:
+                    raise DeepSeekAgentError(f"DeepSeek 请求失败：{exc.__class__.__name__}") from exc
+                retry_hint = "\n这是重试请求；请只返回完整、可解析的 JSON 对象，不要输出解释文字。"
+            except (TypeError, ValueError) as exc:
+                if attempt + 1 >= max_attempts:
+                    raise DeepSeekAgentError("DeepSeek 返回内容无法解析") from exc
+                retry_hint = "\n上一次响应无法解析；请重新生成完整、可解析的 JSON 对象，不要输出解释文字。"
+            except DeepSeekAgentError as exc:
+                if attempt + 1 >= max_attempts:
+                    raise
+                retry_hint = "\n上一次响应为空或格式不完整；请重新生成完整、可解析的 JSON 对象，不要输出解释文字。"
+        raise DeepSeekAgentError("DeepSeek 请求未完成")
 
     @staticmethod
     def _output_text(payload: dict[str, Any]) -> str:
