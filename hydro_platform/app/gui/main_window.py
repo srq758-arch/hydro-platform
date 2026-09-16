@@ -22,6 +22,7 @@ from hydro_platform.app.api import Api
 from hydro_platform.app.workers.simple_worker import SimpleWorker, WorkerEvent
 from hydro_platform.app.scheduler.task_scheduler import TaskScheduler
 from hydro_platform.config.paths import get_database_path
+from hydro_platform.database.connection import connect
 from hydro_platform.intelligence.web_search import SearchRuntime
 
 
@@ -219,6 +220,10 @@ class HydroPlatformApp:
 
     def get_data_space_info(self, data_mode="production"):
         return self._get_api(data_mode).get_data_space_info()
+
+    def migrate_data_space(self, data_mode="production"):
+        """用户明确确认后执行 schema 迁移；不在启动阶段隐式写生产库。"""
+        return self._get_api(data_mode).migrate_data_space()
 
     def get_dashboard_test(self):
         return self._get_api("test").get_dashboard()
@@ -588,16 +593,17 @@ def _production_database_needs_bootstrap(db_path: Path) -> bool:
     if not db_path.exists() or db_path.stat().st_size == 0:
         return True
 
-    uri = f"file:{db_path.as_posix()}?mode=ro"
     try:
-        conn = sqlite3.connect(uri, uri=True)
+        # 统一走 connection.connect，覆盖 Windows 跨盘只读锁与 immutable
+        # 稳定快照回退；不要在这里重新拼接易错的 file:F:/... URI。
+        conn = connect(db_path, read_only=True)
         try:
             row = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1"
             ).fetchone()
         finally:
             conn.close()
-    except sqlite3.DatabaseError as exc:
+    except Exception as exc:
         raise RuntimeError(f"生产数据库不可读：{db_path}") from exc
     return row is None
 

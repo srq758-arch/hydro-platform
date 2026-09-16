@@ -397,6 +397,24 @@ async function renderDashboard() {
   }
   catch (e) {
     console.error('[Dashboard] Error loading dashboard:', e);
+    try {
+      const info = await api().get_data_space_info('production');
+      if (info && info.migration_required) {
+        const blocked = Number(info.foreign_key_violations || 0) > 0;
+        main.innerHTML = `
+          <div class="card" style="border-left:4px solid #f59e0b;background:#fffbeb;">
+            <div style="font-size:18px;font-weight:700;margin-bottom:8px;">数据库需要迁移</div>
+            <div style="color:var(--text-muted);line-height:1.8;">
+              当前 schema v${esc(info.schema_version)}，程序需要 v${esc(info.target_schema_version)}。
+              ${blocked ? `检测到 ${esc(info.foreign_key_violations)} 项外键问题，迁移已保护性阻止。` : '请先备份，然后在测试实验室中明确确认迁移。'}
+            </div>
+            <button class="btn btn-primary" style="margin-top:14px;" onclick="navigate('test-lab')">前往数据库管理</button>
+          </div>`;
+        return;
+      }
+    } catch (infoError) {
+      console.warn('[Dashboard] Could not read data-space status:', infoError);
+    }
     main.innerHTML = `<div class="empty">加载失败：${esc(e)}</div>`;
     return;
   }
@@ -1171,6 +1189,7 @@ async function renderTestLab() {
                   style="min-width: 140px; font-weight: 600;">
             ${isTestMode ? '📊' : '🧪'} 切换到${isTestMode ? '生产' : '测试'}空间
           </button>
+          ${!isTestMode ? '<button id="migrate-db-btn" class="btn btn-primary" style="display:none;font-weight:600;">迁移数据库</button>' : ''}
           ${isTestMode ? '<button class="btn btn-outline" onclick="resetTestLab()" style="color: #dc2626; border-color: #fca5a5;">🗑️ 清空测试数据</button>' : ''}
         </div>
       </div>
@@ -1239,6 +1258,16 @@ async function renderTestLab() {
     if (spaceInfoEl) {
       spaceInfoEl.textContent = `数据库：${dbName} · schema v${info.schema_version}`;
     }
+    const migrateButton = el('migrate-db-btn');
+    if (migrateButton && info.migration_required) {
+      migrateButton.style.display = 'inline-block';
+      migrateButton.textContent = `迁移到 v${info.target_schema_version}`;
+      migrateButton.onclick = migrateProductionDatabase;
+      if (info.foreign_key_violations) {
+        migrateButton.disabled = true;
+        migrateButton.title = `存在 ${info.foreign_key_violations} 项外键问题，需先治理`;
+      }
+    }
 
     const d = stats.counts || stats.asset_cards || stats;
     const stationCount = d.stations || 0;
@@ -1268,6 +1297,21 @@ async function renderTestLab() {
     if (spaceInfoEl) {
       spaceInfoEl.textContent = '读取失败：' + e.message;
     }
+  }
+}
+
+async function migrateProductionDatabase() {
+  if (!confirm('将把生产数据库迁移到当前程序版本。系统会先检查外键问题；存在问题时不会执行迁移。是否继续？')) return;
+  try {
+    const result = await api().migrate_data_space('production');
+    if (!result.success) {
+      alert(`迁移未执行：${result.error || '未知原因'}`);
+      return;
+    }
+    alert(result.already_current ? '数据库已经是最新版本。' : '数据库迁移完成，页面将刷新。');
+    window.location.reload();
+  } catch (e) {
+    alert(`迁移失败：${e.message || e}`);
   }
 }
 

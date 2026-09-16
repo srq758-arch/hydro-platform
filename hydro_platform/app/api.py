@@ -1285,6 +1285,28 @@ class Api:
         finally:
             conn.close()
 
+    def migrate_data_space(self) -> Dict[str, Any]:
+        """在用户明确确认后迁移当前数据空间到代码目标 schema。"""
+        before = self.get_data_space_info()
+        violations = int(before.get("foreign_key_violations") or 0)
+        if violations:
+            return {
+                "success": False,
+                "error": f"存在 {violations} 项外键问题，迁移已阻止；请先完成数据治理",
+                "before": before,
+            }
+        if not before.get("migration_required"):
+            return {"success": True, "already_current": True, "info": before}
+        result = self.initialize()
+        after = self.get_data_space_info()
+        return {
+            "success": not after.get("migration_required"),
+            "before": before,
+            "after": after,
+            "initialize": result,
+            "error": None if not after.get("migration_required") else "迁移未达到目标版本",
+        }
+
     def export_database(self) -> Dict[str, Any]:
         """导出数据库到用户指定位置。"""
         import shutil
