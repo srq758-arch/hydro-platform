@@ -88,6 +88,7 @@ class TrustedSourceDiscovery:
                     "publisher_domain": SearchAggregator.publisher_domain(canonical_url),
                     "discovery_depth": 0,
                     "requires_manual_verification": True,
+                    "verify_pdf_text": canonical_url.lower().split("?", 1)[0].endswith(".pdf"),
                 },
             })
         return candidates
@@ -286,7 +287,7 @@ class TrustedSourceDiscovery:
                     all_candidates.extend(with_lead(native))
                     event("deepseek_search_done", {"count": len(native)})
                 except DeepSeekAgentError as exc:
-                    warnings.append(f"DeepSeek 原生搜索不可用：{exc}")
+                    warnings.append(f"DeepSeek 原生搜索异常（已继续程序搜索）：{exc}")
 
         # 通道 B：可审计的程序控制搜索，再由 DeepSeek 限定只能从真实结果中选择。
         if "program_controlled_search" in providers:

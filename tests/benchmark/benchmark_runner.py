@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 from dataclasses import dataclass
 
 from hydro_platform.database.connection import connect
@@ -28,16 +28,25 @@ class GroundTruthCase:
     canonical_name: str
     country: str
     year: int
-    period_type: str
-    expected_generation_gwh: float
-    expected_unit: str
-    source_url: str
-    evidence_reference: str
-    notes: str
-    source_type: str
-    manually_verified: bool
-    verified_by: str
-    verified_date: str
+    period_type: str = "calendar_year"
+    expected_generation_gwh: float | None = None
+    expected_unit: str | None = None
+    source_url: str | None = None
+    evidence_reference: str = ""
+    notes: str = ""
+    source_type: str = "unknown"
+    manually_verified: bool = False
+    verified_by: str = ""
+    verified_date: str = ""
+    # V5.2 语义字段；旧版 20 条样本没有这些字段。
+    metric: str = "gross_generation"
+    measurement_scope: str = "plant"
+    value_type: str = "actual"
+    unit_raw: str | None = None
+    source_content_kind: str = ""
+    evidence_locator: str = ""
+    publisher: str = ""
+    local_name: str = ""
 
 
 @dataclass
@@ -82,12 +91,41 @@ class BenchmarkRunner:
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
-        cases = []
-        for item in data:
-            case = GroundTruthCase(**item)
-            cases.append(case)
+        return [self._case_from_mapping(item) for item in data]
 
-        return cases
+    @staticmethod
+    def _case_from_mapping(item: dict[str, Any]) -> GroundTruthCase:
+        """兼容旧版样本和 V5.2 Development/Holdout manifest。"""
+        expected_value = item.get("expected_generation_gwh", item.get("expected_value"))
+        expected_unit = item.get("expected_unit") or item.get("normalized_unit")
+        expected_unit = expected_unit or item.get("unit_raw") or item.get("unit")
+        evidence_reference = item.get("evidence_reference") or item.get("evidence_locator", "")
+        source_url = item.get("source_url") or item.get("url")
+        return GroundTruthCase(
+            case_id=str(item["case_id"]),
+            entity_id=str(item["entity_id"]),
+            canonical_name=str(item["canonical_name"]),
+            country=str(item.get("country", "")),
+            year=int(item.get("year", item.get("target_period"))),
+            period_type=str(item.get("period_type", "calendar_year")),
+            expected_generation_gwh=(float(expected_value) if expected_value is not None else None),
+            expected_unit=(str(expected_unit) if expected_unit is not None else None),
+            source_url=(str(source_url) if source_url else None),
+            evidence_reference=str(evidence_reference),
+            notes=str(item.get("notes", "")),
+            source_type=str(item.get("source_type", item.get("source_content_kind", "unknown"))),
+            manually_verified=bool(item.get("manually_verified", expected_value is not None)),
+            verified_by=str(item.get("verified_by", "")),
+            verified_date=str(item.get("verified_date", "")),
+            metric=str(item.get("metric", "gross_generation")),
+            measurement_scope=str(item.get("measurement_scope", "plant")),
+            value_type=str(item.get("value_type", "actual")),
+            unit_raw=(str(item["unit_raw"]) if item.get("unit_raw") is not None else None),
+            source_content_kind=str(item.get("source_content_kind", "")),
+            evidence_locator=str(item.get("evidence_locator", evidence_reference)),
+            publisher=str(item.get("publisher", "")),
+            local_name=str(item.get("local_name", "")),
+        )
 
     def run_all(self, limit: int = None) -> List[CaseResult]:
         """运行所有用例"""
@@ -166,9 +204,9 @@ class BenchmarkRunner:
         if row is None:
             # 插入电站
             conn.execute("""
-                INSERT INTO stations (entity_id, entity_type, canonical_name, country)
-                VALUES (?, 'station', ?, ?)
-            """, (case.entity_id, case.canonical_name, case.country))
+                INSERT INTO stations (entity_id, entity_type, canonical_name, local_name, country)
+                VALUES (?, 'station', ?, ?, ?)
+            """, (case.entity_id, case.canonical_name, case.local_name, case.country))
             conn.commit()
             logger.debug(f"插入电站: {case.entity_id}")
 
@@ -208,19 +246,31 @@ class BenchmarkRunner:
         from hydro_platform.acquisition.router import AcquisitionRouter
 
         # 简化版：只提供 URL resolver（直接返回 Ground Truth 中的 URL）
-        def url_resolver(task):
-            from hydro_platform.acquisition.result import SourceReference
-            return [SourceReference(
-                url=case.source_url,
+        def resolve(task):
+            from hydro_platform.common.enums import ContentKind
+            from hydro_platform.pipeline.context import SourceRef
+
+            expected = ContentKind.ANY
+            source_url = case.source_url or ""
+            if case.source_content_kind == "pdf_table" or source_url.lower().split("?", 1)[0].endswith(".pdf"):
+                expected = ContentKind.PDF
+            elif case.source_content_kind.startswith("html"):
+                expected = ContentKind.HTML
+            return [SourceRef(
+                url=source_url,
                 title=f"{case.canonical_name} Generation Data",
-                publisher=f"{case.country} Official",
-                expected="html"
+                publisher=case.publisher or f"{case.country} Official",
+                expected=expected,
             )]
+
+        class _StaticResolver:
+            def resolve(self, task):
+                return resolve(task)
 
         return PipelineContext(
             conn=conn,
             router=AcquisitionRouter(),
-            url_resolver=url_resolver,
+            url_resolver=_StaticResolver(),
             use_llm=True,
             llm_provider=None  # 可选：配置 LLM provider
         )
@@ -276,10 +326,31 @@ class BenchmarkRunner:
                 actual_unit=None
             )
 
+        if expected.expected_generation_gwh is None:
+            # Holdout 只包含任务输入，不泄露期望值；不能把它伪装成数值准确率。
+            return CaseResult(
+                case_id=expected.case_id,
+                case_name=expected.canonical_name,
+                source_discovered=pipeline_result.documents_archived > 0,
+                acquisition_success=pipeline_result.documents_archived > 0,
+                parse_success=pipeline_result.candidates_extracted > 0,
+                extraction_success=pipeline_result.candidates_extracted > 0,
+                entity_match=actual['entity_id'] == expected.entity_id,
+                year_match=str(actual['period_label']) == str(expected.year),
+                unit_match=True,
+                value_accuracy=0.0,
+                overall_pass=False,
+                error_stage="holdout_not_scored",
+                error_message="Holdout 未提供期望值，需在盲测揭示后单独评分",
+                actual_generation_gwh=actual.get('generation_gwh'),
+                actual_year=int(actual['period_label']),
+                actual_unit=actual.get('unit_raw'),
+            )
+
         # 字段级对比
         entity_match = actual['entity_id'] == expected.entity_id
         year_match = str(actual['period_label']) == str(expected.year)
-        unit_match = self._normalize_unit(actual.get('unit_raw', '')) == expected.expected_unit
+        unit_match = self._normalize_unit(actual.get('unit_raw', '')) == self._normalize_unit(expected.expected_unit or '')
 
         # 值准确度（允许 5% 误差）
         value_accuracy = self._calc_value_accuracy(
@@ -316,12 +387,21 @@ class BenchmarkRunner:
 
     def _normalize_unit(self, unit: str) -> str:
         """标准化单位"""
-        unit = unit.upper().strip()
-        if unit in ['GWH', 'GW·H', 'GW H']:
+        unit = str(unit or '').upper().strip()
+        compact = unit.replace(' ', '').replace('·', '').replace('・', '')
+        if compact in ['亿千瓦时', '亿度']:
             return 'GWh'
-        elif unit in ['TWH', 'TW·H']:
+        if compact in ['万千瓦时', '万度']:
+            return 'MWh'
+        if compact in ['千瓦时', '度']:
+            return 'kWh'
+        if compact in ['GWH']:
+            return 'GWh'
+        elif compact in ['TWH']:
             return 'TWh'
-        return unit
+        elif compact in ['MWH']:
+            return 'MWh'
+        return compact
 
     def _calc_value_accuracy(self, expected: float, actual: float) -> float:
         """计算值准确度（0-1）"""

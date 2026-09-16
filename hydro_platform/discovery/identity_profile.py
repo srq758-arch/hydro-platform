@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import re
 import sqlite3
 from typing import Any, Iterable
@@ -20,7 +21,17 @@ def _unique(values: Iterable[object]) -> tuple[str, ...]:
 
 def _split_aliases(value: object) -> tuple[str, ...]:
     if isinstance(value, str):
-        return _unique(re.split(r"[;,|/；、\n]", value))
+        text = value.strip()
+        # 导入/测试数据有时把 aliases 序列化为 JSON，而生产 seedlist
+        # 通常使用逗号分隔文本；两者必须得到同一身份画像。
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    return _unique(parsed)
+            except (TypeError, ValueError):
+                pass
+        return _unique(re.split(r"[;,|/；、，\n]", text))
     if isinstance(value, Iterable):
         return _unique(value)
     return ()

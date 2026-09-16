@@ -49,6 +49,29 @@ def test_load_ground_truth():
     print("测试1通过")
 
 
+def test_load_v5_2_development_and_holdout_manifests():
+    """V5.2 manifest 字段演进不能让 benchmark 初始化失败。"""
+    root = Path(__file__).parent / "ground_truth"
+    development = BenchmarkRunner(root / "development_verified_v1.json")
+    assert len(development.cases) == 4
+    assert development.cases[0].expected_generation_gwh == 78790.0
+    assert development.cases[0].source_content_kind == "pdf_table"
+    assert development.cases[0].metric == "gross_generation"
+    assert development.cases[0].measurement_scope == "plant"
+
+    holdout = BenchmarkRunner(root / "holdout_inputs_v1.json")
+    assert len(holdout.cases) == 5
+    assert holdout.cases[0].expected_generation_gwh is None
+    assert holdout.cases[0].source_url is None
+
+
+def test_benchmark_unit_normalization_supports_energy_units():
+    runner = BenchmarkRunner(Path(__file__).parent / "ground_truth" / "station_generation_cases.json")
+    assert runner._normalize_unit("亿千瓦时") == "GWh"
+    assert runner._normalize_unit("GWh") == "GWh"
+    assert runner._normalize_unit("万度") == "MWh"
+
+
 def test_evaluator():
     """测试2：评估器计算"""
     print("\n=== 测试2：评估器计算 ===")

@@ -228,6 +228,7 @@ class DeepSeekResponsesAgent:
                     "search_title": str(item.get("title") or "")[:500],
                     "search_snippet": str(item.get("reason") or "")[:1000],
                     "search_provider": "deepseek_native_web_search",
+                    "verify_pdf_text": url.lower().split("?", 1)[0].endswith(".pdf"),
                 },
             })
         return candidates
@@ -277,6 +278,7 @@ class DeepSeekResponsesAgent:
                     "search_title": str(source.get("title") or "")[:500],
                     "search_snippet": str(source.get("snippet") or "")[:1000],
                     "search_provider": "program_controlled_search",
+                    "verify_pdf_text": str(source["url"]).lower().split("?", 1)[0].endswith(".pdf"),
                 },
             })
         return candidates

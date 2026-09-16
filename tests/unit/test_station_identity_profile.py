@@ -98,3 +98,23 @@ def test_unaccepted_discovery_domain_cannot_become_official_site_constraint(db):
 
     assert profile.official_domains == ()
     assert profile.official_entry_urls == ()
+
+
+def test_json_aliases_are_decoded_and_international_core_name_is_searchable(db):
+    db.execute(
+        """INSERT INTO stations(
+               entity_id, canonical_name, local_name, aliases, country
+           ) VALUES ('station-json-alias', 'Itaipu Dam (Paraguay side)',
+                     'Usina Hidrelétrica de Itaipu',
+                     '["Itaipu Dam (Paraguay side)", "Usina Hidrelétrica de Itaipu"]',
+                     'Paraguay')"""
+    )
+    db.commit()
+    station = dict(db.execute("SELECT * FROM stations WHERE entity_id='station-json-alias'").fetchone())
+
+    profile = build_station_identity_profile(db, station)
+    intent = SourceDiscoveryService.build_generation_intent(profile.station_context(), "2023")
+
+    assert profile.aliases == ("Itaipu Dam (Paraguay side)", "Usina Hidrelétrica de Itaipu")
+    assert '"[' not in " ".join(intent.query_hints)
+    assert "Itaipu" in " ".join(intent.query_hints)

@@ -111,7 +111,17 @@ class UrlProbe:
                 preview, links = self._inspect_html(response)
                 if links:
                     metadata["discovered_links"] = links
-            elif 200 <= http_status < 400 and "pdf" in content_type and metadata.get("verify_pdf_text"):
+            elif (
+                200 <= http_status < 400
+                and "pdf" in content_type
+                and (
+                    metadata.get("verify_pdf_text")
+                    or str(candidate.get("document_type") or "").lower() == "pdf"
+                    or final_url.lower().split("?", 1)[0].endswith(".pdf")
+                )
+            ):
+                # 来源发现只读取最多 2 MB/前 12 页的正文预览，用于补足搜索
+                # 摘要没有电站名/年份的情况；正式采集仍由 Pipeline 单独下载。
                 preview = self._official_pdf_preview(response)
             else:
                 preview = ""

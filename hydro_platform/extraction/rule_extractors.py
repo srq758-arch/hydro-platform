@@ -34,16 +34,50 @@ _UNIT_ALT = (
     r"GW|MW|kW|兆瓦|千瓦|万千瓦"
 )
 _VALUE_UNIT_RE = re.compile(
-    rf"(?P<value>\d[\d,]*(?:\.\d+)?)\s*(?P<unit>{_UNIT_ALT})",
+    rf"(?P<value>\d[\d.,]*)\s*(?P<unit>{_UNIT_ALT})",
 )
 # 年份 + 后续数值单位，用于把数值就近关联到年份，如 "2024 年发电量 1234 GWh"
 _YEAR_NEAR_RE = re.compile(
     rf"(?P<year>(?:19|20)\d{{2}})\s*年?[^\d]{{0,40}}?"
-    rf"(?P<value>\d[\d,]*(?:\.\d+)?)\s*(?P<unit>{_UNIT_ALT})",
+    rf"(?P<value>\d[\d.,]*)\s*(?P<unit>{_UNIT_ALT})",
 )
 _CELL_NUMBER_RE = re.compile(r"(?P<value>\d[\d,]*(?:\.\d+)?)")
 _HEADER_UNIT_RE = re.compile(rf"(?P<unit>{_UNIT_ALT})")
 _GENERATION_HEADER_WORDS = ("发电量", "generation", "generated", "output")
+
+
+def _sentence_context(text: str, start: int, end: int, radius: int = 48) -> str:
+    """优先返回数值所在句，避免把相邻段落的“梯级/合计”带入范围判断。"""
+    if not text:
+        return ""
+    separators = "。！？；.!?;"
+    left = max((text.rfind(mark, 0, start) for mark in separators), default=-1) + 1
+    right_candidates = [text.find(mark, end) for mark in separators]
+    right_candidates = [pos for pos in right_candidates if pos >= 0]
+    right = min(right_candidates, default=len(text))
+    if right - left <= 500:
+        return text[left:right + 1].strip()
+    return text[max(0, start - radius):min(len(text), end + radius)]
+
+
+def _infer_document_year(text: str) -> str | None:
+    """从标题/公告首段提取文档主年份，供排版错序的 PDF 作为保守回退。"""
+    head = (text or "")[:1200]
+    match = re.search(
+        r"(?P<year>(?:19|20)\d{2})\s*(?:年|年度|annual|year)"
+        r"[^。！？.!?]{0,36}(?:发电量|generation|geração|produ[cç][aã]o)",
+        head,
+        re.IGNORECASE,
+    )
+    return match.group("year") if match else None
+
+
+def _document_period_hint(text: str) -> str:
+    """提取文档标题/首段的全年口径，供候选共享明确的报告期语义。"""
+    head = (text or "")[:1600]
+    if re.search(r"全年|年度|annual|anual|full\s+year|calendar\s+year", head, re.IGNORECASE):
+        return "年度/全年"
+    return ""
 
 
 def _normalise_station_name(value: str) -> str:
@@ -71,9 +105,33 @@ def _matches_target_station(row_label: str, entity_names: tuple[str, ...] | None
     return False
 
 
-def _to_float(s: str) -> float | None:
+def _to_float(s: str, context: str = "") -> float | None:
+    """解析常见英文/中文小数与葡语/欧洲千位格式。"""
+    raw = str(s or "").replace(" ", "")
+    if not raw:
+        return None
+    locale_number = bool(re.search(
+        r"(?:produção|geração|usina|relatório|atingiu|suprimento|energia|foram)",
+        context or "",
+        re.IGNORECASE,
+    ))
+    if "." in raw and "," in raw:
+        # 最后出现的分隔符视为小数点，另一个视为千位分隔。
+        if raw.rfind(",") > raw.rfind("."):
+            raw = raw.replace(".", "").replace(",", ".")
+        else:
+            raw = raw.replace(",", "")
+    elif locale_number and re.fullmatch(r"\d{1,3}(?:\.\d{3})+", raw):
+        # 葡萄牙语年报常以 83.879 表示 83,879，而不是 83.879。
+        raw = raw.replace(".", "")
+    elif raw.count(".") > 1:
+        raw = raw.replace(".", "")
+    elif raw.count(",") == 1 and len(raw.rsplit(",", 1)[1]) != 3:
+        raw = raw.replace(",", ".")
+    else:
+        raw = raw.replace(",", "")
     try:
-        return float(s.replace(",", ""))
+        return float(raw)
     except ValueError:
         return None
 
@@ -92,13 +150,14 @@ def _build_candidate(
     value_str: str,
     unit_str: str,
     context: str,
+    snippet_context: str | None = None,
     entity_id: str | None,
     task_id: str | None,
     source_id: str | None,
     locator: str | None,
 ) -> ExtractionCandidate:
     up = parse_unit(unit_str)
-    value = _to_float(value_str)
+    value = _to_float(value_str, context)
     gwh = value * up.factor_to_gwh if (value is not None and up.is_energy and up.factor_to_gwh) else None
 
     vt_clue = detect_value_type_clue(context)
@@ -133,7 +192,7 @@ def _build_candidate(
         measurement_scope=scope_clue.scope,
         value_raw=value_str,
         unit_raw=unit_str,
-        snippet=context.strip()[:300] or None,
+        snippet=(snippet_context if snippet_context is not None else context).strip()[:300] or None,
         locator=locator,
         confidence=None,
         extractor=RULE_EXTRACTOR_VERSION,
@@ -156,16 +215,19 @@ def extract_from_text(
         return []
     candidates: list[ExtractionCandidate] = []
     consumed_spans: list[tuple[int, int]] = []
+    document_year = _infer_document_year(text)
+    document_period = _document_period_hint(text)
 
     for m in _YEAR_NEAR_RE.finditer(text):
-        start = max(0, m.start() - 30)
-        end = min(len(text), m.end() + 30)
+        context = _sentence_context(text, m.start(), m.end())
+        classification_context = f"{context} {document_period}".strip()
         candidates.append(
             _build_candidate(
                 year=m.group("year"),
                 value_str=m.group("value"),
                 unit_str=m.group("unit"),
-                context=text[start:end],
+                context=classification_context,
+                snippet_context=context,
                 entity_id=entity_id,
                 task_id=task_id,
                 source_id=source_id,
@@ -180,14 +242,20 @@ def extract_from_text(
         span = (m.start(), m.end())
         if any(s <= span[0] < e for s, e in consumed_spans):
             continue
-        start = max(0, m.start() - 40)
-        end = min(len(text), m.end() + 40)
+        context = _sentence_context(text, m.start(), m.end())
+        classification_context = f"{context} {document_period}".strip()
+        nearby_years = [
+            match.group(0)
+            for match in re.finditer(r"(?<!\d)(?:19|20)\d{2}(?!\d)", context)
+        ]
+        inferred_year = nearby_years[0] if len(set(nearby_years)) == 1 else document_year
         candidates.append(
             _build_candidate(
-                year=sole_year,
+                year=sole_year or inferred_year,
                 value_str=m.group("value"),
                 unit_str=m.group("unit"),
-                context=text[start:end],
+                context=classification_context,
+                snippet_context=context,
                 entity_id=entity_id,
                 task_id=task_id,
                 source_id=source_id,

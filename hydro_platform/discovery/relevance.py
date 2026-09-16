@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import re
+import json
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -15,19 +16,30 @@ from typing import Iterable
 _GENERATION_TERMS = (
     "发电量", "上网电量", "年发电量", "年度发电", "electricity generation",
     "annual generation", "annual output", "generation gwh", "generation twh",
+    # 常见国际来源语言：只收录“发电/产能”短语，避免把普通 production
+    # 单独作为指标词而放宽到非电力页面。
+    "geração de energia", "geração anual", "produção de energia", "energia gerada",
+    "elektrik üretimi", "yıllık üretim", "توليد الكهرباء", "إنتاج الكهرباء", "الطاقة المولدة",
 )
 _ANNUAL_REPORT_TERMS = (
     "年度报告", "年报", "发电量完成情况公告", "annual report", "sustainability report", "esg report",
+    "relatório anual", "relatorio anual", "yıllık rapor", "السنوي",
 )
 _ANNUAL_SCOPE_TERMS = (
     "全年", "全年度", "年度", "年内", "截至12月31日", "截至 12 月 31 日", "年度累计", "发电量完成情况公告",
     "annual", "full year", "year ended", "for the year",
+    "anual", "ano inteiro", "no ano", "relatório anual", "relatorio anual",
+    "yıllık", "yılında", "2022 yılı", "2023 yılı", "2024 yılı", "2025 yılı",
+    "السنوي", "عام 2022", "عام 2023", "عام 2024", "عام 2025",
 )
 _PARTIAL_SCOPE_TERMS = (
     "一季度", "二季度", "三季度", "四季度", "上半年", "下半年", "月度", "当月", "单月",
     "季度", "截至6月", "截至 6 月", "截至9月", "截至 9 月", "截至10月", "截至 10 月",
     "截至11月", "截至 11 月", "january", "february", "march", "april", "may", "june",
     "july", "august", "september", "october", "november",
+    "trimestre", "semestre", "mensal", "mês", "meses",
+    "çeyrek", "üç aylık", "aylık", "ilk yarı", "ikinci yarı",
+    "ربع", "النصف الأول", "النصف الثاني", "شهري",
 )
 _EXCLUSION_TERMS = (
     "安全责任", "责任人名单", "任命", "招标", "中标", "采购", "招聘",
@@ -55,7 +67,15 @@ class CandidateRelevanceVerifier:
         ]
         aliases = station.get("aliases")
         if isinstance(aliases, str):
-            raw.extend(re.split(r"[;,|/；、]", aliases))
+            text = aliases.strip()
+            if text.startswith("[") and text.endswith("]"):
+                try:
+                    parsed = json.loads(text)
+                    raw.extend(parsed if isinstance(parsed, list) else [text])
+                except (TypeError, ValueError):
+                    raw.extend(re.split(r"[;,|/；、，]", text))
+            else:
+                raw.extend(re.split(r"[;,|/；、，]", text))
         elif isinstance(aliases, Iterable):
             raw.extend(str(item) for item in aliases)
         # Identity Profile 的 search_aliases 由 seedlist 原字段派生或由已经
@@ -70,6 +90,22 @@ class CandidateRelevanceVerifier:
             value = str(value or "").strip()
             if len(value) >= 3 and value not in values:
                 values.append(value)
+
+            # 国际 seedlist 常把设施后缀、所在国家/侧别写进规范名，而公告标题
+            # 只保留核心站名（如 “Itaipu Binacional”“Atatürk HES”）。只从
+            # 拉丁文字段派生长度>=4的核心 token，并排除设施/地区通用词；不对
+            # 中文做逐字拆分，避免把普通词误当作电站别名。
+            if not re.search(r"[\u4e00-\u9fff]", value):
+                tokens = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿĀ-žА-Яа-яİıŞşĞğÇçÜüÖöÄäß]+", value)
+                stop = {
+                    "dam", "hydroelectric", "hydropower", "power", "plant", "station",
+                    "baraj", "baraji", "hes", "usina", "hidrelétrica", "hidreletrica",
+                    "paraguay", "side", "high", "the", "de", "of", "and",
+                }
+                for token in tokens:
+                    folded = token.strip().lower()
+                    if len(folded) >= 4 and folded not in stop and folded not in values:
+                        values.append(folded)
 
             # 名称库往往保留全称，而官方公告、证券披露和新闻摘要常使用简称。
             # 这里仅生成可追溯的去设施后缀/去常见河流前缀变体，不用模糊两字

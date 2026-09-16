@@ -116,3 +116,18 @@ def test_probe_detects_utf8_html_when_server_uses_default_latin1_encoding():
     )
 
     assert "三峡电站 2023 年全年发电量" in result["metadata"]["content_preview"]
+
+
+def test_pdf_document_type_enables_bounded_preview_without_extra_flag(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        UrlProbe, "_official_pdf_preview",
+        staticmethod(lambda response: called.append(response.url) or "Itaipu 2023 annual generation"),
+    )
+    response = _BrokenPdfResponse(200, "https://example.test/report.pdf")
+    result = UrlProbe(session=_Session(response)).probe(
+        {"url": "https://example.test/report.pdf", "document_type": "pdf"}
+    )
+
+    assert called == ["https://example.test/report.pdf"]
+    assert result["metadata"]["content_preview"] == "Itaipu 2023 annual generation"

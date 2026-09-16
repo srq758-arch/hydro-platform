@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
+import json
 import re
 import sqlite3
 
@@ -135,7 +136,15 @@ class SourceDiscoveryService:
         local_name = str(station.get("local_name") or "").strip()
         raw_names = station.get("search_aliases") or station.get("aliases") or ()
         if isinstance(raw_names, str):
-            alias_names = [item.strip() for item in raw_names.replace("；", ";").split(";") if item.strip()]
+            text = raw_names.strip()
+            if text.startswith("[") and text.endswith("]"):
+                try:
+                    parsed = json.loads(text)
+                    alias_names = [str(item).strip() for item in parsed] if isinstance(parsed, list) else [text]
+                except (TypeError, ValueError):
+                    alias_names = [item.strip() for item in re.split(r"[;,|/；、，]", text) if item.strip()]
+            else:
+                alias_names = [item.strip() for item in re.split(r"[;,|/；、，]", text) if item.strip()]
         else:
             alias_names = [str(item).strip() for item in raw_names if str(item).strip()]
         country = str(station.get("country") or "").strip().lower()

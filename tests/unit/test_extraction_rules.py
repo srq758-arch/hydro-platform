@@ -12,6 +12,7 @@ from hydro_platform.extraction import (
     normalize_to_gwh,
     parse_unit,
 )
+from hydro_platform.extraction.rule_extractors import _to_float
 from hydro_platform.parsing.content import ParsedContent, Table
 from hydro_platform.common.enums import ContentKind
 
@@ -37,6 +38,11 @@ def test_normalize_to_gwh():
     # 功率单位不归一
     none_gwh, up2 = normalize_to_gwh(1200.0, "MW")
     assert none_gwh is None and up2.is_power
+
+
+def test_portuguese_thousands_separator_is_parsed_as_energy_value():
+    assert _to_float("83.879", "A produção da Usina Hidrelétrica de ITAIPU foi de 83.879 GWh") == 83879.0
+    assert _to_float("787.90", "三峡电站完成发电量 787.90 亿千瓦时") == 787.9
 
 
 # ---- 线索 ----

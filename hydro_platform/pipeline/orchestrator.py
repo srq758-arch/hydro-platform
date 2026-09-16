@@ -81,6 +81,49 @@ def _entity_names(ctx: PipelineContext, entity_id: str) -> tuple[str, ...]:
     return tuple(str(name).strip() for name in names if name and str(name).strip())
 
 
+def _compact_entity_text(value: object) -> str:
+    """压缩名称中的空格/标点，供抽取候选做保守实体命中判断。"""
+    return "".join(ch.casefold() for ch in str(value or "") if ch.isalnum())
+
+
+def _prefer_target_entity_candidates(candidates, entity_names: tuple[str, ...]):
+    """同一文档列出多个实体时，只保留明确命中目标实体的候选。
+
+    单站年报常把实体名放在标题或正文之外，若整份文档没有任何候选片段
+    命中目标名称，则保留原候选交给 Validation，而不是凭空丢失事实。
+    """
+    if not candidates or not entity_names:
+        return candidates
+    target_keys = tuple(
+        key for key in (_compact_entity_text(name) for name in entity_names)
+        if len(key) >= 3
+    )
+    if not target_keys:
+        return candidates
+    mentioned = [
+        candidate
+        for candidate in candidates
+        if any(key in _compact_entity_text(candidate.snippet) for key in target_keys)
+    ]
+    selected = mentioned or candidates
+    # 同一数值常由“标题/正文”和“年度表格”各抽出一次；若已有完整年份候选，
+    # 丢弃同值但缺年份的副本，避免缺少期间语义的候选阻断正式来源。
+    complete_values = {
+        (getattr(candidate, "generation_gwh", None), str(getattr(candidate, "unit_raw", "") or "").casefold())
+        for candidate in selected
+        if getattr(candidate, "generation_gwh", None) is not None and getattr(candidate, "period_label", None)
+    }
+    if complete_values:
+        selected = [
+            candidate
+            for candidate in selected
+            if getattr(candidate, "period_label", None)
+            or (getattr(candidate, "generation_gwh", None), str(getattr(candidate, "unit_raw", "") or "").casefold())
+            not in complete_values
+        ]
+    return selected or candidates
+
+
 def _parsed_evidence_text(parsed) -> str:
     """将解析出的表格转成带表头的可审计文本，供归属校验与 LLM 阅读。"""
     parts = [getattr(parsed, "text", "") or ""]
@@ -420,6 +463,10 @@ def _execute_pipeline(ctx: PipelineContext, task, tm: TaskManager, result: Pipel
                     candidate.confidence = min(candidate.confidence or 0.35, 0.35)
                     if candidate.extractor and not candidate.extractor.startswith("ocr+"):
                         candidate.extractor = f"ocr+{candidate.extractor}"
+            # 一个年报可能同时列出多个电站和梯级合计。目标站命中时，
+            # 先在候选层排除其他站/合计，避免无关候选触发本任务的硬闸门；
+            # 单站文档没有可定位名称时由 helper 保留原候选交给 Validation。
+            cands = _prefer_target_entity_candidates(cands, entity_names)
             if not cands:
                 ocr_status = parsed.meta.get("ocr_status") if isinstance(parsed.meta, dict) else None
                 ocr_required = bool(

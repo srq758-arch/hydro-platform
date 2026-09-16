@@ -35,7 +35,7 @@ _ROLLING_RE = re.compile(
     re.IGNORECASE,
 )
 _FULL_YEAR_RE = re.compile(
-    r"全年|年度|全年度|annual(?:ly)?|full\s+year|calendar\s+year|yearly",
+    r"全年|年度|全年度|annual(?:ly)?|anual(?:mente)?|full\s+year|calendar\s+year|yearly",
     re.IGNORECASE,
 )
 
@@ -43,7 +43,15 @@ _METRIC_PATTERNS = (
     (GenerationMetric.NET_GENERATION, re.compile(r"净发电量|net\s+(?:electricity\s+)?generation", re.IGNORECASE)),
     (GenerationMetric.ENERGY_SENT_OUT, re.compile(r"上网电量|送出电量|energy\s+sent\s+out|electricity\s+supplied", re.IGNORECASE)),
     (GenerationMetric.ELECTRICITY_SALES, re.compile(r"售电量|electricity\s+sales|power\s+sales", re.IGNORECASE)),
-    (GenerationMetric.GROSS_GENERATION, re.compile(r"总发电量|毛发电量|gross\s+(?:electricity\s+)?generation", re.IGNORECASE)),
+    # “完成发电量”是运营公告对单站实际发电量的常用口径；葡萄牙语
+    # 年报中的 geração/produção 也表示电站总产出。若出现净/上网/售电
+    # 限定词，前面的专用规则会优先命中，不会被这里覆盖。
+    (GenerationMetric.GROSS_GENERATION, re.compile(
+        r"总发电量|毛发电量|完成发电量|gross\s+(?:electricity\s+)?generation|"
+        r"\b(?:annual\s+)?generation\b|\b(?:energia\s+)?gerad[ao]\b|"
+        r"\bgera[cç][aã]o\b|\bprodu[cç][aã]o\b|\bgeneraci[oó]n\b",
+        re.IGNORECASE,
+    )),
 )
 
 _FORECAST_WORDS = (
@@ -52,7 +60,7 @@ _FORECAST_WORDS = (
 )
 _ACTUAL_WORDS = (
     "actual", "reported", "recorded", "achieved", "实际", "实发", "累计完成", "已完成",
-    "完成", "达到", "实现",
+    "完成", "达到", "实现", "atingiu", "foi de", "realizada", "registrou", "produziu",
 )
 
 _REGION_WORDS = (
@@ -61,7 +69,10 @@ _REGION_WORDS = (
 )
 _COMPLEX_WORDS = ("complex", "power base", "电站群", "基地", "枢纽群")
 _GROUP_WORDS = ("group total", "company total", "集团合计", "公司合计", "全公司")
-_PLANT_WORDS = ("station", "plant", "单站", "本站", "该电站", "电站")
+_PLANT_WORDS = (
+    "station", "plant", "单站", "本站", "该电站", "电站",
+    "usina", "hidrelétrica", "hidreletrica", "hydroelectric",
+)
 
 
 @dataclass
