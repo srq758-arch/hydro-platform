@@ -28,3 +28,13 @@ def test_rule_candidate_records_metric_and_normalized_unit():
     assert candidate.metric == GenerationMetric.GROSS_GENERATION
     assert candidate.normalized_unit.value == "gwh"
     assert candidate.generation_gwh == 1230.0
+
+
+def test_arabic_fiscal_range_does_not_become_calendar_year():
+    """阿拉伯语年报中的 2022/2021 财年不得冒充 2022 自然年。"""
+    text = (
+        "جدول محطات الكهرباء المائية (2022/2021) "
+        "الكهرباء المولدة سنوياً (جيجاوات / ساعة) "
+        "السد العالي 2100 10329"
+    )
+    assert extract_from_text(text) == []
