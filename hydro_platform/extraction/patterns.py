@@ -20,6 +20,12 @@ from ..common.enums import GenerationMetric, MeasurementScope, PeriodType, Value
 _YEAR_RE = re.compile(r"(?<!\d)(19|20)\d{2}(?!\d)")
 _QUARTER_RE = re.compile(r"\b(Q[1-4])\b|第?([一二三四1-4])季度", re.IGNORECASE)
 _FISCAL_RE = re.compile(r"\bFY\s?\d{2,4}\b|财年|财政年度|fiscal\s+year", re.IGNORECASE)
+# 很多官方年报不写 FY/财年，而用 ``2021/2022``、``2021-2022`` 表示
+# 财政年度。该线索不能证明它等同于目标日历年，因此按财年保守处理，
+# 让 Validation/Promotion 要求人工确认，而不是静默升格。
+_FISCAL_RANGE_RE = re.compile(
+    r"\b(?:19|20)\d{2}\s*[/–—-]\s*(?:19|20)\d{2}\b"
+)
 _MONTH_RE = re.compile(
     r"(?:19|20)\d{2}[-/.年]\s*(?:0?[1-9]|1[0-2])\s*月?|"
     r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
@@ -119,6 +125,8 @@ def detect_period_type(text: str) -> PeriodType:
     if _QUARTER_RE.search(t):
         return PeriodType.QUARTER
     if _FISCAL_RE.search(t):
+        return PeriodType.FISCAL_YEAR
+    if _FISCAL_RANGE_RE.search(t):
         return PeriodType.FISCAL_YEAR
     if _MONTH_RE.search(t):
         return PeriodType.MONTH

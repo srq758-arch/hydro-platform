@@ -16,6 +16,8 @@ def test_metric_ontology_does_not_guess_plain_generation():
 def test_period_and_scope_ontology_separate_ytd_and_group():
     assert detect_period_type("截至2024年9月累计发电") == PeriodType.YEAR_TO_DATE
     assert detect_period_type("rolling 12 months") == PeriodType.ROLLING_12_MONTHS
+    assert detect_period_type("Annual report 2021/2022 generated energy") == PeriodType.FISCAL_YEAR
+    assert detect_period_type("财政年度 2021-2022 发电量") == PeriodType.FISCAL_YEAR
     assert detect_scope_clue("集团合计发电量").scope == MeasurementScope.GROUP
 
 
