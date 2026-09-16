@@ -187,6 +187,24 @@ def test_extracts_target_station_annual_value_from_linear_pdf_table_text():
     assert "SCOPE_NOT_PLANT" not in candidate.flags
 
 
+def test_extracts_target_station_annual_value_from_english_linear_table_text():
+    text = (
+        "2023 annual generation (GWh) station quarter change annual change "
+        "Three Gorges 100 1.0 1234 2.0"
+    )
+    parsed = ParsedContent(kind=ContentKind.PDF, ok=True, text=text)
+    cands = extract_candidates(
+        parsed,
+        entity_id="station-three-gorges",
+        entity_names=("Three Gorges Dam",),
+    )
+    target = [c for c in cands if c.value_raw == "1234"]
+    assert len(target) == 1
+    assert target[0].generation_gwh == 1234.0
+    assert target[0].period_label == "2023"
+    assert target[0].locator == "text.station_row[Three Gorges]"
+
+
 def test_failed_parse_yields_no_candidates():
     parsed = ParsedContent.unavailable(ContentKind.PDF, "no pypdf")
     assert extract_candidates(parsed) == []

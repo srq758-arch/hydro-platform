@@ -125,13 +125,21 @@ def _station_row_aliases(entity_names: tuple[str, ...] | None) -> tuple[str, ...
         short = re.sub(r"^(?:长江|金沙江|雅砻江|澜沧江|黄河|珠江|红水河)", "", name)
         if short and short != name:
             variants.append(short)
-        # 统一“水电站/水电厂/电站”后缀，覆盖“三峡水电站”↔“三峡电站”。
+        # 统一中英文站名后缀，覆盖“三峡水电站”↔“三峡电站”以及
+        # “Three Gorges Dam”↔“Three Gorges”、“Belo Monte hydroelectric
+        # plant”↔“Belo Monte”。
         for value in tuple(variants):
-            for suffix in ("水电站", "水电厂", "hydroelectric plant", "hydropower plant"):
+            for suffix in (
+                "水电站", "水电厂", "hydroelectric plant", "hydropower plant",
+                "hydroelectric station", "hydropower station", "power plant",
+                "power station", "dam", "station",
+            ):
                 if value.lower().endswith(suffix.lower()):
                     stem = value[: -len(suffix)].strip()
                     if stem:
-                        variants.append(stem + ("电站" if suffix in ("水电站", "水电厂") else " plant"))
+                        variants.append(
+                            stem + ("电站" if suffix in ("水电站", "水电厂") else "")
+                        )
                     break
         for value in variants:
             if len(value) >= 2 and value not in aliases:
