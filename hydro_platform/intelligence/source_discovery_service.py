@@ -18,6 +18,7 @@ from ..discovery.authority import AuthoritySourceFinder
 from ..discovery.identity_profile import build_station_identity_profile
 from ..discovery.official import OfficialSourceFinder
 from ..discovery.official_site_explorer import OfficialSiteExplorer
+from ..discovery.operator_hints import deterministic_operator_hint
 from ..discovery.url_probe import UrlProbe
 from ..models.source_pipeline import CandidateSource
 from .deepseek_agent import DeepSeekAgentError, DeepSeekResponsesAgent, TaskIntent
@@ -166,7 +167,13 @@ class SourceDiscoveryService:
             str(item.get("canonical_name") or "").strip()
             for item in publisher_profiles if isinstance(item, dict)
         ), "")
-        operator = str(station.get("operator") or station.get("owner") or profile_publisher).strip()
+        operator = str(
+            station.get("operator")
+            or station.get("owner")
+            or profile_publisher
+            or deterministic_operator_hint(station)
+            or ""
+        ).strip()
         if metric == "capacity":
             queries = [
                 f'"{search_name}" {target_period} installed capacity MW',

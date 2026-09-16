@@ -51,6 +51,16 @@ _PARTIAL_SCOPE_TERMS = (
     "çeyrek", "üç aylık", "aylık", "ilk yarı", "ikinci yarı",
     "ربع", "النصف الأول", "النصف الثاني", "شهري",
 )
+# 月名本身经常出现在文档发布日期或历史背景日期中（例如 ``5 de maio de
+# 1984``），不能单独把一份全年报告降级为月度数据。只有当窗口没有全年线索时，
+# 这些词才作为部分期间证据；明确的季度、半年、月度词仍始终有效。
+_DATE_LIKE_PARTIAL_TERMS = frozenset({
+    "january", "february", "march", "april", "may", "june", "july",
+    "august", "september", "october", "november",
+    "janeiro de", "fevereiro de", "março de", "abril de", "maio de",
+    "junho de", "julho de", "agosto de", "setembro de", "outubro de",
+    "novembro de", "dezembro de",
+})
 _EXCLUSION_TERMS = (
     "安全责任", "责任人名单", "任命", "招标", "中标", "采购", "招聘",
     "design generation", "设计年发电量", "预计发电量", "预测发电量",
@@ -246,6 +256,10 @@ class CandidateRelevanceVerifier:
         有季度/月度范围，季度/月度始终优先。
         """
         candidates: list[tuple[int, str, str | None]] = []
+        target_annual_terms = CandidateRelevanceVerifier._annual_scope_terms(target_year)
+        has_global_target_annual = any(
+            item.lower() in text.lower() for item in target_annual_terms
+        )
         for term in _GENERATION_TERMS:
             for match in re.finditer(re.escape(term), text, re.I):
                 window = text[max(0, match.start() - width): match.end() + width]
@@ -253,6 +267,15 @@ class CandidateRelevanceVerifier:
                 annual = next((item for item in CandidateRelevanceVerifier._annual_scope_terms(target_year)
                                if item.lower() in lowered), None)
                 partial = next((item for item in _PARTIAL_SCOPE_TERMS if item.lower() in lowered), None)
+                # 月名常常只是报告日期/历史日期。若同一证据窗已有目标年份的
+                # 全年表达（例如 “Em 2023 ... produção ... 5 de maio de 1984”），
+                # 年度证据优先；真正的 “Em janeiro de 2024 ... gerou” 没有全年
+                # 线索，仍会保留 partial。
+                if partial and partial.lower() in _DATE_LIKE_PARTIAL_TERMS:
+                    if has_global_target_annual or any(
+                        item.lower() in lowered for item in target_annual_terms
+                    ):
+                        partial = None
                 score = 0
                 score += 5 if target_year and target_year in window else 0
                 score += 4 if any(str(alias).lower() in lowered for alias in aliases) else 0

@@ -30,6 +30,32 @@ def test_itaipu_portuguese_annual_pdf_is_eligible_from_core_name_and_preview():
     assert result.period_scope == "annual"
 
 
+def test_portuguese_annual_report_history_date_does_not_trigger_partial_scope():
+    verifier = CandidateRelevanceVerifier()
+    result = verifier.verify(
+        {
+            "url": "https://www.itaipu.gov.br/Relatorio_Anual_Itaipu2023_Portugues.pdf",
+            "link_text": "Relatório Anual 2023",
+            "metadata": {
+                "content_preview": (
+                    "Em 2023 a produção de energia da Usina Hidrelétrica de ITAIPU "
+                    "foi de 83.879 GWh. Em 39 anos de geração, desde 5 de maio de 1984 "
+                    "até 31 de dezembro de 2023, a produção acumulada atingiu 2.984.711 GWh."
+                ),
+            },
+        },
+        station={
+            "canonical_name": "Itaipu Dam (Paraguay side)",
+            "local_name": "Usina Hidrelétrica de Itaipu",
+            "aliases": ["Itaipu Dam (Paraguay side)", "Usina Hidrelétrica de Itaipu"],
+        },
+        target_period="2023",
+    )
+
+    assert result.eligible is True
+    assert result.period_scope == "annual"
+
+
 def test_json_alias_string_does_not_match_as_literal():
     verifier = CandidateRelevanceVerifier()
     result = verifier.verify(

@@ -181,6 +181,27 @@ def test_build_intent_uses_arabic_queries_on_first_search():
     )
 
 
+def test_build_intent_adds_deterministic_operator_hints_when_seed_operator_missing():
+    assert SourceDiscoveryService.build_intent(
+        {
+            "canonical_name": "Jinping-I Dam",
+            "local_name": "锦屏一级水电站",
+            "aliases": ["锦屏一级"],
+            "country": "China",
+        },
+        "2022",
+    ).query_hints[-1] == "雅砻江流域水电开发有限公司 2022 发电量完成情况 锦屏一级电站"
+
+    assert SourceDiscoveryService.build_intent(
+        {
+            "canonical_name": "Aswan High Dam",
+            "local_name": "السد العالي",
+            "country": "Egypt",
+        },
+        "2022",
+    ).query_hints[-1] == '"Egyptian Electricity Holding Company" 2022 التقرير السنوي إنتاج "السد العالي"'
+
+
 def test_pipeline_adapter_returns_same_unified_candidates(db):
     _task(db)
     search = _ProgramSearch()
