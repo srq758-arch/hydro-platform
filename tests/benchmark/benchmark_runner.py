@@ -84,7 +84,21 @@ class BenchmarkRunner:
     def __init__(self, ground_truth_path: Path, db_path: Path = None):
         self.cases = self._load_ground_truth(ground_truth_path)
         self.db_path = db_path
+        # 显式传入隔离数据库时，运行器应自包含地建立当前 schema；否则在
+        # 干净临时目录中会在第一条用例才报 no such table: stations。
+        # 未显式传 db_path 的历史调用不触碰默认/生产数据。
+        if self.db_path is not None:
+            self._ensure_schema()
         logger.info(f"加载 {len(self.cases)} 个 Ground Truth 用例")
+
+    def _ensure_schema(self) -> None:
+        from hydro_platform.database.migrations import migrate
+
+        conn = connect(self.db_path)
+        try:
+            migrate(conn)
+        finally:
+            conn.close()
 
     def _load_ground_truth(self, path: Path) -> List[GroundTruthCase]:
         """加载 Ground Truth 数据"""
