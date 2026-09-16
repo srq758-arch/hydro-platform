@@ -153,6 +153,14 @@ class SourceDiscoveryService:
         search_name = re.sub(r"^(?:长江|金沙江|雅砻江|澜沧江|黄河|珠江|红水河)", "", name)
         search_name = re.sub(r"水电(?:站|厂)$", "电站", search_name)
         is_chinese_name = bool(re.search(r"[\u4e00-\u9fff]", search_name))
+        # 以 seedlist 的国家/本地名称决定首轮检索语言。之前土耳其、阿拉伯语
+        # 词族只在“首轮无关/为空”的失败改写阶段触发，导致很多站点首轮只搜英文，
+        # 在搜索引擎返回看似相关但不可用的页面时，补查可能根本不会执行。
+        is_turkish = country in {"turkey", "türkiye", "turkiye"}
+        is_arabic = country in {
+            "egypt", "مصر", "sudan", "السودان", "iraq", "العراق",
+            "syria", "سوريا", "morocco", "المغرب", "algeria", "الجزائر",
+        } or bool(re.search(r"[\u0600-\u06ff]", search_name))
         publisher_profiles = station.get("publisher_profiles") or ()
         profile_publisher = next((
             str(item.get("canonical_name") or "").strip()
@@ -184,6 +192,16 @@ class SourceDiscoveryService:
                     f'{portuguese_name} {target_period} geração anual',
                     f'{portuguese_name} {target_period} relatório anual geração',
                 ]
+            elif is_turkish:
+                queries = [
+                    f'"{search_name}" {target_period} yıllık elektrik üretimi',
+                    f'"{search_name}" {target_period} yıllık faaliyet raporu üretim',
+                ]
+            elif is_arabic:
+                queries = [
+                    f'"{search_name}" {target_period} إنتاج الكهرباء السنوي',
+                    f'"{search_name}" {target_period} التقرير السنوي إنتاج الكهرباء',
+                ]
             else:
                 queries = [
                     f'"{name}" {target_period} annual generation',
@@ -192,6 +210,14 @@ class SourceDiscoveryService:
             if operator:
                 if is_portuguese:
                     queries.append(f'{operator} {target_period} geração {portuguese_name}')
+                elif is_turkish:
+                    queries.append(
+                        f'"{operator}" {target_period} yıllık üretim raporu "{search_name}"'
+                    )
+                elif is_arabic:
+                    queries.append(
+                        f'"{operator}" {target_period} التقرير السنوي إنتاج "{search_name}"'
+                    )
                 else:
                     queries.append(f'"{operator}" {target_period} annual report "{name}" generation')
         # 只有已成功/已人工接受的官方域名才参与站内检索；未经核实的搜索结果

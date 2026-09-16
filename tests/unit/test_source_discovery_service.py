@@ -145,6 +145,42 @@ def test_build_intent_uses_portuguese_queries_for_brazil_seed():
     )
 
 
+def test_build_intent_uses_turkish_queries_on_first_search():
+    intent = SourceDiscoveryService.build_intent(
+        {
+            "canonical_name": "Ataturk Dam",
+            "local_name": "Atatürk Barajı",
+            "country": "Turkey",
+            "operator": "Elektrik Üretim AS (EÜAŞ)",
+        },
+        "2022",
+    )
+
+    assert intent.query_hints == (
+        '"Atatürk Barajı" 2022 yıllık elektrik üretimi',
+        '"Atatürk Barajı" 2022 yıllık faaliyet raporu üretim',
+        '"Elektrik Üretim AS (EÜAŞ)" 2022 yıllık üretim raporu "Atatürk Barajı"',
+    )
+
+
+def test_build_intent_uses_arabic_queries_on_first_search():
+    intent = SourceDiscoveryService.build_intent(
+        {
+            "canonical_name": "Aswan High Dam",
+            "local_name": "السد العالي",
+            "country": "Egypt",
+            "operator": "Egyptian Electricity Holding Co",
+        },
+        "2022",
+    )
+
+    assert intent.query_hints == (
+        '"السد العالي" 2022 إنتاج الكهرباء السنوي',
+        '"السد العالي" 2022 التقرير السنوي إنتاج الكهرباء',
+        '"Egyptian Electricity Holding Co" 2022 التقرير السنوي إنتاج "السد العالي"',
+    )
+
+
 def test_pipeline_adapter_returns_same_unified_candidates(db):
     _task(db)
     search = _ProgramSearch()
