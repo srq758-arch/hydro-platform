@@ -41,12 +41,41 @@ def connect(
             # Windows 盘符路径必须使用标准 file:/// URI；原来的 ``file:F:/...``
             # 会被 SQLite 当成相对 URI，导致正式库的只读查询无法打开。
             uri = f"{target.resolve().as_uri()}?mode=ro"
-            conn = sqlite3.connect(
-                uri,
-                uri=True,
-                check_same_thread=False,
-                timeout=timeout,
-            )
+            try:
+                conn = None
+                conn = sqlite3.connect(
+                    uri,
+                    uri=True,
+                    check_same_thread=False,
+                    timeout=timeout,
+                )
+                # Windows 某些跨盘文件系统会延迟到第一次读表时才暴露
+                # “unable to open database file”；提前读 schema_version，
+                # 让下面的 immutable 回退覆盖这类懒加载失败。
+                conn.execute("PRAGMA schema_version").fetchone()
+            except sqlite3.OperationalError:
+                # 某些 Windows/跨盘文件系统无法建立 SQLite 只读锁，即使
+                # 数据库本身是完整且稳定的；此时在没有任何 journal/WAL
+                # 旁文件的前提下，immutable 仍是安全的只读快照。若存在
+                # WAL/journal，必须保留原错误，避免读到过期快照。
+                sidecars = (
+                    target.with_name(target.name + "-wal"),
+                    target.with_name(target.name + "-shm"),
+                    target.with_name(target.name + "-journal"),
+                )
+                if any(path.exists() for path in sidecars):
+                    if conn is not None:
+                        conn.close()
+                    raise
+                if conn is not None:
+                    conn.close()
+                immutable_uri = f"{target.resolve().as_uri()}?mode=ro&immutable=1"
+                conn = sqlite3.connect(
+                    immutable_uri,
+                    uri=True,
+                    check_same_thread=False,
+                    timeout=timeout,
+                )
         else:
             conn = sqlite3.connect(
                 str(target),
