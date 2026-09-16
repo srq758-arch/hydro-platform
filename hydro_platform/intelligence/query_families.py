@@ -109,6 +109,12 @@ class QueryFamilyPlanner:
                 ))
         else:
             is_portuguese = _clean(station.get("country")).lower() in {"brazil", "brasil", "portugal"}
+            country = _clean(station.get("country")).lower()
+            is_turkish = country in {"turkey", "türkiye", "turkiye"}
+            is_arabic = country in {
+                "egypt", "مصر", "sudan", "السودان", "iraq", "العراق",
+                "syria", "سوريا", "morocco", "المغرب", "algeria", "الجزائر",
+            } or bool(re.search(r"[\u0600-\u06ff]", name))
             if is_portuguese:
                 portuguese_name = re.sub(
                     r"^(?:usina\s+hidrel[eé]trica|central\s+hidrel[eé]trica)\s+",
@@ -124,6 +130,32 @@ class QueryFamilyPlanner:
                         f'{portuguese_name} {year} relatório anual geração',
                         "annual_report_index",
                         "电站名+目标年+葡语年度报告",
+                    ),
+                ))
+            elif is_turkish:
+                variants.extend((
+                    QueryVariant(
+                        f'"{name}" {year} yıllık elektrik üretimi',
+                        "station_annual_generation",
+                        "电站名+目标年+土耳其语年度发电量",
+                    ),
+                    QueryVariant(
+                        f'"{name}" {year} yıllık faaliyet raporu üretim',
+                        "annual_report_index",
+                        "电站名+目标年+土耳其语年度报告",
+                    ),
+                ))
+            elif is_arabic:
+                variants.extend((
+                    QueryVariant(
+                        f'"{name}" {year} إنتاج الكهرباء السنوي',
+                        "station_annual_generation",
+                        "电站名+目标年+阿拉伯语年度发电量",
+                    ),
+                    QueryVariant(
+                        f'"{name}" {year} التقرير السنوي إنتاج الكهرباء',
+                        "annual_report_index",
+                        "电站名+目标年+阿拉伯语年度报告",
                     ),
                 ))
             else:
@@ -145,6 +177,18 @@ class QueryFamilyPlanner:
                         f'{operator} {year} geração {portuguese_name}',
                         "operator_annual_disclosure",
                         "运营主体+目标年+葡语年度披露",
+                    ))
+                elif is_turkish:
+                    variants.append(QueryVariant(
+                        f'"{operator}" {year} yıllık üretim raporu "{name}"',
+                        "operator_annual_disclosure",
+                        "运营主体+目标年+土耳其语年度披露",
+                    ))
+                elif is_arabic:
+                    variants.append(QueryVariant(
+                        f'"{operator}" {year} التقرير السنوي إنتاج "{name}"',
+                        "operator_annual_disclosure",
+                        "运营主体+目标年+阿拉伯语年度披露",
                     ))
                 else:
                     variants.append(QueryVariant(

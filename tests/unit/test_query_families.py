@@ -47,6 +47,40 @@ def test_brazil_query_family_uses_portuguese_generation_terms():
     ]
 
 
+def test_turkey_query_family_uses_local_annual_generation_terms():
+    variants = QueryFamilyPlanner.variants(
+        station={
+            "canonical_name": "Ataturk Dam",
+            "local_name": "Atatürk Barajı",
+            "country": "Turkey",
+        },
+        target_period="2022",
+        limit=3,
+    )
+
+    queries = [item.query for item in variants]
+    assert queries[0] == '"Atatürk Barajı" 2022 yıllık elektrik üretimi'
+    assert "faaliyet raporu" in queries[1]
+    assert all("http" not in query for query in queries)
+
+
+def test_arabic_query_family_uses_local_annual_generation_terms():
+    variants = QueryFamilyPlanner.variants(
+        station={
+            "canonical_name": "Aswan High Dam",
+            "local_name": "السد العالي",
+            "country": "Egypt",
+        },
+        target_period="2022",
+        limit=3,
+    )
+
+    queries = [item.query for item in variants]
+    assert "إنتاج الكهرباء السنوي" in queries[0]
+    assert "التقرير السنوي" in queries[1]
+    assert all("http" not in query for query in queries)
+
+
 def test_failure_rewrite_does_not_retry_network_failures():
     intent = TaskIntent(
         station_name="三峡电站", target_period="2024",
