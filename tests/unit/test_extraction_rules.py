@@ -161,6 +161,32 @@ def test_extracts_target_station_annual_value_from_multilevel_table():
     assert "三峡" not in (candidate.snippet or "")
 
 
+def test_extracts_target_station_annual_value_from_linear_pdf_table_text():
+    """真实 PDF 的表格可能只剩线性文本，仍应定位到目标电站年度列。"""
+    text = (
+        "2024 年第四季度 2024 年全年 总发电量（亿千瓦时） "
+        "电站名称 总发电量 同比变动 总发电量 同比变动 "
+        "乌东德电站 84.71 3.79 396.47 13.56 "
+        "三峡电站 143.72 -36.47 829.11 3.29"
+    )
+    parsed = ParsedContent(kind=ContentKind.PDF, ok=True, text=text)
+    cands = extract_candidates(
+        parsed,
+        entity_id="station-three-gorges",
+        entity_names=("Three Gorges Dam", "三峡水电站"),
+    )
+    target = [c for c in cands if c.value_raw == "829.11"]
+    assert len(target) == 1
+    candidate = target[0]
+    assert candidate.period_label == "2024"
+    assert candidate.period_type == PeriodType.CALENDAR_YEAR
+    assert candidate.generation_gwh == 82911.0
+    assert "三峡电站" in (candidate.snippet or "")
+    assert candidate.locator == "text.station_row[三峡电站]"
+    assert "PERIOD_UNCLEAR" not in candidate.flags
+    assert "SCOPE_NOT_PLANT" not in candidate.flags
+
+
 def test_failed_parse_yields_no_candidates():
     parsed = ParsedContent.unavailable(ContentKind.PDF, "no pypdf")
     assert extract_candidates(parsed) == []

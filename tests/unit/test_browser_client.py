@@ -59,6 +59,16 @@ def test_browser_rendered_html_success():
     assert res.meta.final_url == "https://e.org/final"
 
 
+def test_browser_pdf_challenge_reports_html_fallback_diagnostic():
+    resp = RawResponse(200, {"Content-Type": "text/html"}, RENDERED_HTML, "https://e.org/f.pdf")
+    client = _client(resp)
+    res = client.fetch("https://e.org/f.pdf", expected=ContentKind.PDF)
+    assert not res.success
+    assert res.error_code == AcquisitionErrorCode.NOT_PDF
+    assert "HTML" in res.error
+    assert "浏览器回退" in res.error
+
+
 def test_browser_block_page_still_fails_through_shared_validator():
     # 浏览器拿到的仍是拦截页 → 复用同一校验，判 HTML_BLOCK_PAGE
     resp = RawResponse(200, {"Content-Type": "text/html"}, BLOCK_BODY, "https://e.org/x")

@@ -190,9 +190,38 @@ class PlaywrightDriver:
 
                 status = resp.status if resp is not None else 200
                 headers = dict(resp.headers) if resp is not None else {}
+                final_url = page.url
+                content_type = "".join(
+                    value for key, value in headers.items() if key.lower() == "content-type"
+                ).lower()
+                # Chromium's PDF viewer exposes an HTML shell through
+                # ``page.content()``.  Preserve the original response bytes for
+                # direct PDF URLs so the shared validator can see ``%PDF-`` and
+                # the archive layer can store the actual document.
+                if resp is not None and (
+                    "pdf" in content_type
+                    or final_url.lower().split("?", 1)[0].endswith(".pdf")
+                ):
+                    try:
+                        # A PDF navigation is rendered by Chromium's internal
+                        # viewer; ``resp.body()`` may therefore expose the
+                        # viewer HTML shell instead of the document bytes.
+                        # Fetch once through the same browser context so its
+                        # cookies/session are retained while the raw response
+                        # remains available to the shared validator.
+                        raw = context.request.get(final_url, timeout=timeout_ms)
+                        raw_headers = dict(raw.headers)
+                        return RawResponse(
+                            raw.status, raw_headers, raw.body(), raw.url,
+                        )
+                    except PWError:
+                        try:
+                            body = resp.body()
+                        except PWError:
+                            body = page.content().encode("utf-8")
+                    return RawResponse(status, headers, body, final_url)
                 # 无独立下载时，取渲染后页面内容
                 body = page.content().encode("utf-8")
-                final_url = page.url
                 return RawResponse(status, headers, body, final_url)
             finally:
                 browser.close()

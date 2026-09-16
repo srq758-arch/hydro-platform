@@ -42,7 +42,9 @@ _YEAR_NEAR_RE = re.compile(
     rf"(?P<value>\d[\d.,]*)\s*(?P<unit>{_UNIT_ALT})",
 )
 _CELL_NUMBER_RE = re.compile(r"(?P<value>\d[\d,]*(?:\.\d+)?)")
-_HEADER_UNIT_RE = re.compile(rf"(?P<unit>{_UNIT_ALT})")
+# 表头里的“季度/年度”包含“度”，不能把这个时间词误识别成能量单位。
+# 独立的“度”（如“100 度”）仍可匹配；只排除常见时间复合词的后缀。
+_HEADER_UNIT_RE = re.compile(rf"(?<![季度年度月])(?P<unit>{_UNIT_ALT})")
 _GENERATION_HEADER_WORDS = ("发电量", "generation", "generated", "output")
 
 
@@ -103,6 +105,118 @@ def _matches_target_station(row_label: str, entity_names: tuple[str, ...] | None
         if len(name_key) >= 3 and (name_key in row_key or row_key in name_key):
             return True
     return False
+
+
+def _station_row_aliases(entity_names: tuple[str, ...] | None) -> tuple[str, ...]:
+    """生成 PDF 线性文本表格可匹配的电站名变体。
+
+    一些 PDF 的表格提取器只能得到类似 ``三峡电站 143.72 -36.47
+    829.11 3.29`` 的连续文本，既没有列头，也没有可用的二维表。这里仅
+    从目标电站的规范名/当地名生成有限变体，避免在整篇文档中把其它电站
+    的数值误归属给当前任务。
+    """
+    aliases: list[str] = []
+    for raw in entity_names or ():
+        name = re.sub(r"\s+", " ", str(raw or "")).strip()
+        if not name:
+            continue
+        variants = [name]
+        # GEM/本地名有时带河流或“长江”等地理前缀，而公告表格只写短名。
+        short = re.sub(r"^(?:长江|金沙江|雅砻江|澜沧江|黄河|珠江|红水河)", "", name)
+        if short and short != name:
+            variants.append(short)
+        # 统一“水电站/水电厂/电站”后缀，覆盖“三峡水电站”↔“三峡电站”。
+        for value in tuple(variants):
+            for suffix in ("水电站", "水电厂", "hydroelectric plant", "hydropower plant"):
+                if value.lower().endswith(suffix.lower()):
+                    stem = value[: -len(suffix)].strip()
+                    if stem:
+                        variants.append(stem + ("电站" if suffix in ("水电站", "水电厂") else " plant"))
+                    break
+        for value in variants:
+            if len(value) >= 2 and value not in aliases:
+                aliases.append(value)
+    # 长变体优先，避免短名先吃掉长名的一部分。
+    return tuple(sorted(aliases, key=len, reverse=True))
+
+
+def _extract_station_rows_from_text(
+    text: str,
+    *,
+    entity_names: tuple[str, ...] | None,
+    entity_id: str | None,
+    task_id: str | None,
+    source_id: str | None,
+    locator: str | None,
+) -> list[ExtractionCandidate]:
+    """从 PDF 表格的线性文本回退抽取目标电站全年行。
+
+    该回退只在同时满足「目标名称 + 全年/年度表头 + 能量单位 + 五列数值」
+    时触发，且只抽取目标行的年度列；季度列和同比列仅用于定位，不会生成
+    候选。这样既修复 PDF 版式导致的漏数，也不会把同表其它电站或合计行当成
+    当前任务的事实。
+    """
+    if not text or not entity_names:
+        return []
+    compact = re.sub(r"\s+", " ", text).strip()
+    if not compact or not re.search(
+        r"全年|年度|annual|anual|full\s+year|calendar\s+year", compact, re.IGNORECASE
+    ):
+        return []
+    unit_match = _HEADER_UNIT_RE.search(compact)
+    if not unit_match:
+        return []
+    year = _infer_document_year(compact)
+    if year is None:
+        years = find_years(compact)
+        year = years[0] if years else None
+    if year is None:
+        return []
+
+    out: list[ExtractionCandidate] = []
+    aliases = _station_row_aliases(entity_names)
+    for alias in aliases:
+        # 行结构：站名、季度发电量、季度同比、全年发电量、全年同比。
+        # 变化率允许负号和百分号，但只把第四列作为年度发电量。
+        pattern = re.compile(
+            rf"(?<![\u4e00-\u9fffA-Za-z])(?P<station>{re.escape(alias)})"
+            rf"(?![\u4e00-\u9fffA-Za-z])\s+"
+            rf"(?P<quarter>-?\d[\d.,]*)\s+"
+            rf"(?P<qchange>-?\d[\d.,]*%?)\s+"
+            rf"(?P<annual>-?\d[\d.,]*)\s+"
+            rf"(?P<annual_change>-?\d[\d.,]*%?)"
+        )
+        for match in pattern.finditer(compact):
+            station = match.group("station")
+            annual = match.group("annual")
+            context = f"{year}年全年 {station} 完成发电量 {annual} {unit_match.group('unit')}"
+            snippet = (
+                f"{year}年全年表格行：{station} "
+                f"{match.group('quarter')} {match.group('qchange')} {annual} "
+                f"{match.group('annual_change')}；全年总发电量 {annual} {unit_match.group('unit')}"
+            )
+            out.append(
+                _build_candidate(
+                    year=year,
+                    value_str=annual,
+                    unit_str=unit_match.group("unit"),
+                    context=context,
+                    snippet_context=snippet,
+                    entity_id=entity_id,
+                    task_id=task_id,
+                    source_id=source_id,
+                    locator=f"{locator or 'text'}.station_row[{station}]",
+                )
+            )
+    # 同一行可能由多个别名命中；按实体/期间/数值/单位去重。
+    unique: list[ExtractionCandidate] = []
+    seen: set[tuple] = set()
+    for candidate in out:
+        key = (candidate.period_label, candidate.value_raw, candidate.unit_raw)
+        if key not in seen:
+            seen.add(key)
+            unique.append(candidate)
+    return unique
 
 
 def _to_float(s: str, context: str = "") -> float | None:
@@ -374,4 +488,16 @@ def extract_candidates(
                 locator_prefix=locator_prefix,
             )
         )
+    # PDF 表格经常被解析成“连续文本”而不是二维 Table；在已有正文/表格
+    # 候选之后做一次目标行回退，保留可复核定位并避免覆盖原始解析结果。
+    candidates.extend(
+        _extract_station_rows_from_text(
+            parsed.text,
+            entity_names=entity_names,
+            entity_id=entity_id,
+            task_id=task_id,
+            source_id=source_id,
+            locator=text_locator,
+        )
+    )
     return candidates

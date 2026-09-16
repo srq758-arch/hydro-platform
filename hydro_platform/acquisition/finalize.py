@@ -58,6 +58,7 @@ def finalize_response(
     meta = build_meta(original_url, resp, kind, access_method, elapsed_ms)
     if err_code is None:
         return FetchResult.ok(meta=meta, body=resp.body, attempts=attempts)
-    return FetchResult.fail(
-        err_code, f"下载不合法：{err_code.value}", meta=meta, attempts=attempts
-    )
+    message = f"下载不合法：{err_code.value}"
+    if err_code.value == "NOT_PDF" and kind == ContentKind.HTML:
+        message += "（实际返回 HTML 页面，浏览器回退也未取得 PDF）"
+    return FetchResult.fail(err_code, message, meta=meta, attempts=attempts)
