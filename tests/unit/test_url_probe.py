@@ -39,6 +39,18 @@ class _BrokenPdfResponse(_Response):
         yield b"%PDF-1.4\ninvalid truncated object table"
 
 
+class _OctetStreamPdfResponse(_BrokenPdfResponse):
+    headers = {"Content-Type": "application/octet-stream"}
+
+
+class _HtmlChallengeResponse(_Response):
+    headers = {"Content-Type": "text/html; charset=utf-8"}
+    encoding = "utf-8"
+
+    def iter_content(self, chunk_size):
+        yield b"<html><body>browser verification required</body></html>"
+
+
 class _Session:
     def __init__(self, response=None, error=None):
         self.response = response
@@ -131,3 +143,29 @@ def test_pdf_document_type_enables_bounded_preview_without_extra_flag(monkeypatc
 
     assert called == ["https://example.test/report.pdf"]
     assert result["metadata"]["content_preview"] == "Itaipu 2023 annual generation"
+
+
+def test_pdf_url_is_previewed_when_server_uses_octet_stream(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        UrlProbe, "_official_pdf_preview",
+        staticmethod(lambda response: called.append(response.url) or "三峡电站 2024 年度发电量"),
+    )
+    response = _OctetStreamPdfResponse(200, "https://example.test/report.pdf")
+    result = UrlProbe(session=_Session(response)).probe(
+        {"url": "https://example.test/report.pdf"}
+    )
+
+    assert called == ["https://example.test/report.pdf"]
+    assert result["metadata"]["content_preview"] == "三峡电站 2024 年度发电量"
+
+
+def test_pdf_url_returning_html_is_sent_to_browser_fallback():
+    response = _HtmlChallengeResponse(200, "https://example.test/report.pdf")
+    result = UrlProbe(session=_Session(response)).probe(
+        {"url": "https://example.test/report.pdf", "document_type": "pdf"}
+    )
+
+    assert result["access_status"] == "requires_browser"
+    assert result["status"] == "discovered"
+    assert "需要浏览器验证" in result["error"]

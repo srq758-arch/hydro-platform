@@ -107,18 +107,33 @@ class UrlProbe:
             final_url = response.url or url
             metadata = dict(candidate.get("metadata") or {})
             content_type = str((getattr(response, "headers", {}) or {}).get("Content-Type") or "").lower()
-            if 200 <= http_status < 400 and "html" in content_type:
+            is_pdf = (
+                "pdf" in content_type
+                or str(candidate.get("document_type") or "").lower() == "pdf"
+                or final_url.lower().split("?", 1)[0].endswith(".pdf")
+            )
+            declared_pdf = (
+                str(candidate.get("document_type") or "").lower() == "pdf"
+                or final_url.lower().split("?", 1)[0].endswith(".pdf")
+            )
+            pdf_html_challenge = bool(
+                200 <= http_status < 400 and declared_pdf and "html" in content_type
+            )
+            if 200 <= http_status < 400 and "html" in content_type and not declared_pdf:
                 preview, links = self._inspect_html(response)
+                if links:
+                    metadata["discovered_links"] = links
+            elif pdf_html_challenge:
+                # 部分官方公告 CDN（例如交易所）对脚本/非浏览器请求返回
+                # HTTP 200 的挑战页，而不是 PDF。保留候选并交给浏览器回退，
+                # 不能把挑战页当作“可读取的 PDF”或静默判成内容不相关。
+                preview, links = self._inspect_html(response)
+                metadata["document_mismatch"] = "expected_pdf_received_html"
                 if links:
                     metadata["discovered_links"] = links
             elif (
                 200 <= http_status < 400
-                and "pdf" in content_type
-                and (
-                    metadata.get("verify_pdf_text")
-                    or str(candidate.get("document_type") or "").lower() == "pdf"
-                    or final_url.lower().split("?", 1)[0].endswith(".pdf")
-                )
+                and is_pdf
             ):
                 # 来源发现只读取最多 2 MB/前 12 页的正文预览，用于补足搜索
                 # 摘要没有电站名/年份的情况；正式采集仍由 Pipeline 单独下载。
@@ -127,7 +142,10 @@ class UrlProbe:
                 preview = ""
             if preview:
                 metadata["content_preview"] = preview
-            if 200 <= http_status < 400:
+            if pdf_html_challenge:
+                access_status, status = "requires_browser", "discovered"
+                error = "HTTP 200：PDF 链接返回 HTML，需要浏览器验证"
+            elif 200 <= http_status < 400:
                 access_status, status, error = "reachable", "discovered", None
             elif http_status in (401, 403, 429):
                 # 这类链接不能被 HTTP 直接读取，但值得交给已接入的浏览器回退。
