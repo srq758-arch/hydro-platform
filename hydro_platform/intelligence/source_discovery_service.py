@@ -174,12 +174,26 @@ class SourceDiscoveryService:
             else:
                 queries.append(f"{search_name} {target_period} 发电量 年度报告")
         else:
-            queries = [
-                f'"{name}" {target_period} annual generation',
-                f'"{canonical}" {target_period} annual generation annual report',
-            ]
+            is_portuguese = country in {"brazil", "brasil", "portugal"}
+            if is_portuguese:
+                portuguese_name = re.sub(
+                    r"^(?:usina\s+hidrel[eé]trica|central\s+hidrel[eé]trica)\s+",
+                    "", name, flags=re.I,
+                ).strip() or name
+                queries = [
+                    f'{portuguese_name} {target_period} geração anual',
+                    f'{portuguese_name} {target_period} relatório anual geração',
+                ]
+            else:
+                queries = [
+                    f'"{name}" {target_period} annual generation',
+                    f'"{canonical}" {target_period} annual generation annual report',
+                ]
             if operator:
-                queries.append(f'"{operator}" {target_period} annual report "{name}" generation')
+                if is_portuguese:
+                    queries.append(f'{operator} {target_period} geração {portuguese_name}')
+                else:
+                    queries.append(f'"{operator}" {target_period} annual report "{name}" generation')
         # 只有已成功/已人工接受的官方域名才参与站内检索；未经核实的搜索结果
         # 不能自行变成“官方站点”。将它放在最后，保留一条泛查询防止旧域名失效。
         site_queries: list[str] = []

@@ -19,6 +19,8 @@ _GENERATION_TERMS = (
     # 常见国际来源语言：只收录“发电/产能”短语，避免把普通 production
     # 单独作为指标词而放宽到非电力页面。
     "geração de energia", "geração anual", "produção de energia", "energia gerada",
+    "gerou", "gerado", "gerada", "produziu", "produzindo", "produção",
+    "generated", "produced", "producing",
     "elektrik üretimi", "yıllık üretim", "توليد الكهرباء", "إنتاج الكهرباء", "الطاقة المولدة",
 )
 _ANNUAL_REPORT_TERMS = (
@@ -39,6 +41,13 @@ _PARTIAL_SCOPE_TERMS = (
     "截至11月", "截至 11 月", "january", "february", "march", "april", "may", "june",
     "july", "august", "september", "october", "november",
     "trimestre", "semestre", "mensal", "mês", "meses",
+    "início de", "inicio de", "começo de", "beginning of",
+    "primeiro trimestre", "segundo trimestre", "terceiro trimestre", "quarto trimestre",
+    "primeiro semestre", "segundo semestre",
+    "em janeiro", "em fevereiro", "em março", "em abril", "em maio", "em junho",
+    "em julho", "em agosto", "em setembro", "em outubro", "em novembro", "em dezembro",
+    "janeiro de", "fevereiro de", "março de", "abril de", "maio de", "junho de",
+    "julho de", "agosto de", "setembro de", "outubro de", "novembro de", "dezembro de",
     "çeyrek", "üç aylık", "aylık", "ilk yarı", "ikinci yarı",
     "ربع", "النصف الأول", "النصف الثاني", "شهري",
 )
@@ -202,6 +211,17 @@ class CandidateRelevanceVerifier:
         return max(ranked, key=lambda item: item[0])[1] if ranked else ""
 
     @staticmethod
+    def _annual_scope_terms(target_year: str) -> tuple[str, ...]:
+        """Return year-specific full-year phrases used by international reports."""
+        year = str(target_year or "").strip()
+        if not year:
+            return _ANNUAL_SCOPE_TERMS
+        return _ANNUAL_SCOPE_TERMS + (
+            f"em {year}", f"no ano de {year}", f"ano de {year}",
+            f"durante {year}", f"for {year}", f"{year} no ano",
+        )
+
+    @staticmethod
     def _scope(context: str) -> tuple[str, str | None]:
         lowered = context.lower()
         annual = next((term for term in _ANNUAL_SCOPE_TERMS if term.lower() in lowered), None)
@@ -230,7 +250,8 @@ class CandidateRelevanceVerifier:
             for match in re.finditer(re.escape(term), text, re.I):
                 window = text[max(0, match.start() - width): match.end() + width]
                 lowered = window.lower()
-                annual = next((item for item in _ANNUAL_SCOPE_TERMS if item.lower() in lowered), None)
+                annual = next((item for item in CandidateRelevanceVerifier._annual_scope_terms(target_year)
+                               if item.lower() in lowered), None)
                 partial = next((item for item in _PARTIAL_SCOPE_TERMS if item.lower() in lowered), None)
                 score = 0
                 score += 5 if target_year and target_year in window else 0

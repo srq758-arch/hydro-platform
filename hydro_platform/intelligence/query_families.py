@@ -108,24 +108,50 @@ class QueryFamilyPlanner:
                     "电站简称+目标年+年度报告索引",
                 ))
         else:
-            variants.extend((
-                QueryVariant(
-                    f'"{name}" {year} annual generation',
-                    "station_annual_generation",
-                    "电站名+目标年+全年发电量",
-                ),
-                QueryVariant(
-                    f'"{canonical}" {year} annual report generation',
-                    "annual_report_index",
-                    "标准名+目标年+年度报告",
-                ),
-            ))
-            if operator:
-                variants.append(QueryVariant(
-                    f'"{operator}" {year} annual report "{name}" generation',
-                    "operator_annual_disclosure",
-                    "运营主体+目标年+年度披露",
+            is_portuguese = _clean(station.get("country")).lower() in {"brazil", "brasil", "portugal"}
+            if is_portuguese:
+                portuguese_name = re.sub(
+                    r"^(?:usina\s+hidrel[eé]trica|central\s+hidrel[eé]trica)\s+",
+                    "", name, flags=re.I,
+                ).strip() or name
+                variants.extend((
+                    QueryVariant(
+                        f'{portuguese_name} {year} geração anual',
+                        "station_annual_generation",
+                        "电站名+目标年+葡语全年发电量",
+                    ),
+                    QueryVariant(
+                        f'{portuguese_name} {year} relatório anual geração',
+                        "annual_report_index",
+                        "电站名+目标年+葡语年度报告",
+                    ),
                 ))
+            else:
+                variants.extend((
+                    QueryVariant(
+                        f'"{name}" {year} annual generation',
+                        "station_annual_generation",
+                        "电站名+目标年+全年发电量",
+                    ),
+                    QueryVariant(
+                        f'"{canonical}" {year} annual report generation',
+                        "annual_report_index",
+                        "标准名+目标年+年度报告",
+                    ),
+                ))
+            if operator:
+                if is_portuguese:
+                    variants.append(QueryVariant(
+                        f'{operator} {year} geração {portuguese_name}',
+                        "operator_annual_disclosure",
+                        "运营主体+目标年+葡语年度披露",
+                    ))
+                else:
+                    variants.append(QueryVariant(
+                        f'"{operator}" {year} annual report "{name}" generation',
+                        "operator_annual_disclosure",
+                        "运营主体+目标年+年度披露",
+                    ))
         for domain in verified_domains:
             domain = _clean(domain).lower().removeprefix("www.")
             if not domain:

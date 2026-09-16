@@ -130,3 +130,106 @@ def test_half_year_disclosure_is_not_promoted_to_annual_generation():
     assert result.eligible is False
     assert result.period_scope == "partial"
     assert "非全年" in result.reason
+
+
+def test_portuguese_generated_phrase_and_year_scope_are_eligible():
+    result = CandidateRelevanceVerifier().verify(
+        {
+            "url": "https://cenarioenergia.com.br/2025/08/06/norte-energia-belo-monte-2024.html",
+            "link_text": "Norte Energia divulga resultados de Belo Monte",
+            "metadata": {
+                "content_preview": (
+                    "Em 2024, Belo Monte gerou 22.690 GWh de energia renovável, "
+                    "com desempenho operacional da usina."
+                ),
+            },
+        },
+        station={
+            "canonical_name": "Belo Monte hydroelectric plant",
+            "local_name": "Usina Hidrelétrica Belo Monte",
+            "operator": "Norte Energia",
+            "aliases": [],
+        },
+        target_period="2024",
+    )
+
+    assert result.eligible is True
+    assert result.period_scope == "annual"
+    assert "全年口径已确认" in result.reason
+
+
+def test_portuguese_partial_month_does_not_become_annual_generation():
+    result = CandidateRelevanceVerifier().verify(
+        {
+            "url": "https://example.test/belo-monte-2024-janeiro.html",
+            "link_text": "Belo Monte gera energia em janeiro de 2024",
+            "metadata": {
+                "content_preview": (
+                    "Em janeiro de 2024, Belo Monte gerou 1.200 GWh de energia."
+                ),
+            },
+        },
+        station={
+            "canonical_name": "Belo Monte hydroelectric plant",
+            "local_name": "Usina Hidrelétrica Belo Monte",
+            "operator": "Norte Energia",
+            "aliases": [],
+        },
+        target_period="2024",
+    )
+
+    assert result.eligible is False
+    assert result.period_scope == "partial"
+
+
+def test_portuguese_beginning_of_year_article_does_not_become_annual_generation():
+    result = CandidateRelevanceVerifier().verify(
+        {
+            "url": "https://flj.com.br/economia/el-nino-deve-reduzir-geracao-de-energia-de-belo-monte-em-2024/",
+            "link_text": "El Niño deve reduzir geração de energia de Belo Monte em 2024",
+            "metadata": {
+                "search_snippet": (
+                    "O padrão climático El Niño deve reduzir a geração da usina hidrelétrica "
+                    "de Belo Monte no início de 2024."
+                ),
+            },
+        },
+        station={
+            "canonical_name": "Belo Monte hydroelectric plant",
+            "local_name": "Usina Hidrelétrica Belo Monte",
+            "operator": "Norte Energia",
+            "aliases": [],
+        },
+        target_period="2024",
+    )
+
+    assert result.eligible is False
+    assert result.period_scope == "partial"
+    assert "非全年" in result.reason
+
+
+def test_portuguese_partial_current_year_is_not_rescued_by_prior_year_annual_sentence():
+    result = CandidateRelevanceVerifier().verify(
+        {
+            "url": "https://www.cnnbrasil.com.br/economia/macroeconomia/usina-de-belo-monte-atende-7-da-demanda-energetica-apos-fim-da-seca/",
+            "link_text": "Usina de Belo Monte atende 7% da demanda energética após fim da seca",
+            "metadata": {
+                "content_preview": (
+                    "Durante o primeiro semestre de 2024, Belo Monte foi a hidrelétrica "
+                    "que mais entregou energia, produzindo 20.414 GWh. "
+                    "No ano passado, Belo Monte gerou 31.521 GWh."
+                ),
+            },
+        },
+        station={
+            "canonical_name": "Belo Monte hydroelectric plant",
+            "local_name": "Usina Hidrelétrica Belo Monte",
+            "operator": "Norte Energia",
+            "aliases": [],
+        },
+        target_period="2024",
+    )
+
+    assert result.eligible is False
+    assert result.period_scope == "partial"
+    assert "非全年" in result.reason

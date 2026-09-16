@@ -27,6 +27,26 @@ def test_query_families_keep_report_and_operator_paths_bounded_without_urls():
     assert any("site:ctg.com.cn" in item.query for item in variants)
 
 
+def test_brazil_query_family_uses_portuguese_generation_terms():
+    variants = QueryFamilyPlanner.variants(
+        station={
+            "canonical_name": "Belo Monte hydroelectric plant",
+            "local_name": "Usina Hidrelétrica Belo Monte",
+            "country": "Brazil",
+            "operator": "Norte Energia",
+        },
+        target_period="2024",
+        limit=3,
+    )
+
+    queries = [item.query for item in variants]
+    assert queries == [
+        "Belo Monte 2024 geração anual",
+        "Belo Monte 2024 relatório anual geração",
+        "Norte Energia 2024 geração Belo Monte",
+    ]
+
+
 def test_failure_rewrite_does_not_retry_network_failures():
     intent = TaskIntent(
         station_name="三峡电站", target_period="2024",

@@ -127,6 +127,24 @@ def test_network_disabled_returns_explicit_diagnostic_without_calling_provider(d
     assert response.provider_diagnostics == [{"provider": "network", "status": "disabled", "count": 0}]
 
 
+def test_build_intent_uses_portuguese_queries_for_brazil_seed():
+    intent = SourceDiscoveryService.build_intent(
+        {
+            "canonical_name": "Belo Monte hydroelectric plant",
+            "local_name": "Usina Hidrelétrica Belo Monte",
+            "country": "Brazil",
+            "operator": "Norte Energia",
+        },
+        "2024",
+    )
+
+    assert intent.query_hints == (
+        "Belo Monte 2024 geração anual",
+        "Belo Monte 2024 relatório anual geração",
+        "Norte Energia 2024 geração Belo Monte",
+    )
+
+
 def test_pipeline_adapter_returns_same_unified_candidates(db):
     _task(db)
     search = _ProgramSearch()
