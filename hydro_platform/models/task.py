@@ -9,7 +9,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..common.clock import now_iso
-from ..common.enums import EntityType, FailureStage, TaskStatus, TaskType
+from ..common.enums import EntityType, FailureStage, PeriodType, TaskStatus, TaskType
 
 
 class Task(BaseModel):
@@ -26,6 +26,7 @@ class Task(BaseModel):
     entity_type: EntityType
     task_type: TaskType
     target_period: str | None = None      # 如 "2024"；容量类任务可为空
+    period_type: PeriodType = PeriodType.CALENDAR_YEAR
 
     status: TaskStatus = TaskStatus.PENDING
     priority_tier: str | None = None
@@ -64,7 +65,16 @@ class Task(BaseModel):
         return self.status == TaskStatus.FAILED and self.attempts < self.max_attempts
 
     @staticmethod
-    def derive_id(entity_id: str, task_type: TaskType, target_period: str | None) -> str:
-        """派生稳定 task_id。相同三元组恒定产出同一 id（幂等键）。"""
+    def derive_id(
+        entity_id: str, task_type: TaskType, target_period: str | None,
+        period_type: PeriodType | str = PeriodType.CALENDAR_YEAR,
+    ) -> str:
+        """派生稳定 task_id。
+
+        日历年沿用旧 ID，避免历史任务失联；财政年度追加口径，避免把同一
+        年份的财年任务误当成已经完成的自然年任务。
+        """
         period = target_period or "-"
-        return f"{entity_id}::{task_type.value}::{period}"
+        kind = period_type.value if isinstance(period_type, PeriodType) else str(period_type or "calendar_year")
+        suffix = "" if kind == PeriodType.CALENDAR_YEAR.value else f"::{kind}"
+        return f"{entity_id}::{task_type.value}::{period}{suffix}"

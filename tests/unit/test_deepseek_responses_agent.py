@@ -55,6 +55,17 @@ def test_intent_normalizes_a_natural_language_year():
     intent = TaskIntent.from_dict({"station_name": "示例电站", "target_period": "2024年", "metric": "generation"})
 
     assert intent.target_period == "2024"
+    assert intent.period_type == "calendar_year"
+
+
+def test_intent_accepts_explicit_fiscal_year():
+    intent = TaskIntent.from_dict({
+        "station_name": "Aswan High Dam",
+        "target_period": "2022",
+        "period_type": "fiscal_year",
+    })
+    assert intent.period_type == "fiscal_year"
+    assert intent.to_dict()["period_type"] == "fiscal_year"
 
 
 def test_agent_cannot_return_a_url_that_was_not_in_program_search_results():

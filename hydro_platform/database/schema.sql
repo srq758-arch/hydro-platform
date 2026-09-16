@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     entity_type         TEXT NOT NULL,
     task_type           TEXT NOT NULL,
     target_period       TEXT,
+    period_type         TEXT NOT NULL DEFAULT 'calendar_year',
     status              TEXT NOT NULL DEFAULT 'pending',
     priority_tier       TEXT,
     collection_priority INTEGER,
@@ -253,4 +254,3 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE INDEX IF NOT EXISTS idx_documents_url ON documents(original_url);
 CREATE INDEX IF NOT EXISTS idx_documents_entity ON documents(entity_id);
 CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(content_hash);
-

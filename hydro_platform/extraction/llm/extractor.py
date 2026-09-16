@@ -41,6 +41,7 @@ def llm_extract(
     entity_id: str | None = None,
     entity_name: str | None = None,
     target_period: str | None = None,
+    period_type: str = "calendar_year",
     task_id: str | None = None,
     source_id: str | None = None,
     locator: str | None = "llm",
@@ -49,7 +50,7 @@ def llm_extract(
     if not content:
         return []
     system, user = build_extraction_prompt(
-        content, entity_name=entity_name, target_period=target_period
+        content, entity_name=entity_name, target_period=target_period, period_type=period_type
     )
     resp = provider.complete(system=system, user=user)
 

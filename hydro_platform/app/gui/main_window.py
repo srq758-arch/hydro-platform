@@ -93,13 +93,13 @@ class HydroPlatformApp:
     def get_station_generation(self, entity_id):
         return self._get_api().get_station_generation(entity_id)
 
-    def discover_trusted_sources(self, entity_id, target_period, limit=10):
+    def discover_trusted_sources(self, entity_id, target_period, limit=10, period_type="calendar_year"):
         """融合真实搜索、DeepSeek 搜索与 GEM 外链；不启动采集。"""
-        return self._get_api().discover_trusted_sources(entity_id, target_period, limit)
+        return self._get_api().discover_trusted_sources(entity_id, target_period, limit, period_type)
 
-    def discover_official_sources(self, entity_id, target_period=None, limit=10):
+    def discover_official_sources(self, entity_id, target_period=None, limit=10, period_type="calendar_year"):
         """旧前端缓存兼容别名，统一转入可信来源发现。"""
-        return self._get_api().discover_trusted_sources(entity_id, target_period or "", limit)
+        return self._get_api().discover_trusted_sources(entity_id, target_period or "", limit, period_type)
 
     def list_data_gaps(self, limit=50, offset=0):
         return self._get_api().list_data_gaps(limit, offset)
@@ -356,6 +356,7 @@ class HydroPlatformApp:
         data_mode = task_config.get("data_mode", "production")
         entity_id = task_config.get("entity_id")
         target_period = task_config.get("target_period")
+        period_type = task_config.get("period_type", "calendar_year")
 
         # P0-2: 业务语义校验
         if not entity_id or not target_period:
@@ -364,6 +365,13 @@ class HydroPlatformApp:
                 "error_stage": "VALIDATION",
                 "error_code": "MISSING_BUSINESS_CONTEXT",
                 "error_message": "必须指定电站 ID 和目标年份"
+            }
+        if period_type not in {"calendar_year", "fiscal_year"}:
+            return {
+                "status": "failed",
+                "error_stage": "VALIDATION",
+                "error_code": "INVALID_PERIOD_TYPE",
+                "error_message": "期间类型只能是自然年或财政年度",
             }
 
         task_id = f"task_{entity_id}_{target_period}_{id(task_config)}"
@@ -409,6 +417,7 @@ class HydroPlatformApp:
                         local_file=None,
                         source_title=source_title,
                         publisher=metadata.get("publisher"),
+                        period_type=period_type,
                         # 用户确认的来源可能是 HTML 网页、PDF 或数据表；由采集器
                         # 根据实际响应头与文件签名识别，不能一律强制为 PDF。
                         expected=ContentKind.ANY
@@ -423,6 +432,7 @@ class HydroPlatformApp:
                         local_file=file_path,
                         source_title=source_title,
                         publisher=metadata.get("publisher"),
+                        period_type=period_type,
                         expected=ContentKind.ANY
                     )
                 else:

@@ -38,6 +38,7 @@ class SourceDiscoveryRequest:
 
     entity_id: str
     target_period: str
+    period_type: str = "calendar_year"
     metric: str = "generation"
     task_id: str | None = None
     source_policy: str = "official_or_authority"
@@ -53,6 +54,8 @@ class SourceDiscoveryRequest:
             raise ValueError("entity_id 不能为空")
         if not str(self.target_period or "").strip().isdigit() or len(str(self.target_period)) != 4:
             raise ValueError("target_period 必须是四位年份")
+        if self.period_type not in {"calendar_year", "fiscal_year"}:
+            raise ValueError("period_type 只能是 calendar_year 或 fiscal_year")
         if self.metric not in {"generation", "capacity"}:
             raise ValueError("当前 Discovery 仅支持 generation 或 capacity")
         if self.max_candidates < 1 or self.max_candidates > 20:
@@ -126,6 +129,7 @@ class SourceDiscoveryService:
     @staticmethod
     def build_intent(
         station: dict[str, Any], target_period: str, metric: str = "generation",
+        period_type: str = "calendar_year",
     ) -> TaskIntent:
         """用同一身份画像生成可重复的基础查询族。
 
@@ -174,20 +178,24 @@ class SourceDiscoveryService:
             or deterministic_operator_hint(station)
             or ""
         ).strip()
+        if period_type not in {"calendar_year", "fiscal_year"}:
+            raise ValueError("period_type 只能是 calendar_year 或 fiscal_year")
+        scope_terms = " fiscal year" if period_type == "fiscal_year" else ""
+        scope_terms_zh = " 财政年度" if period_type == "fiscal_year" else ""
         if metric == "capacity":
             queries = [
-                f'"{search_name}" {target_period} installed capacity MW',
+                f'"{search_name}" {target_period}{scope_terms} installed capacity MW',
                 f'"{canonical}" {target_period} capacity report',
             ]
         elif country == "china" or is_chinese_name:
             queries = [
-                f"{search_name} {target_period} 完成发电量",
-                f"{search_name} {target_period} 全年 发电量",
+                f"{search_name} {target_period}{scope_terms_zh} 完成发电量",
+                f"{search_name} {target_period}{scope_terms_zh} 全年 发电量",
             ]
             if operator:
-                queries.append(f"{operator} {target_period} 发电量完成情况 {search_name}")
+                queries.append(f"{operator} {target_period}{scope_terms_zh} 发电量完成情况 {search_name}")
             else:
-                queries.append(f"{search_name} {target_period} 发电量 年度报告")
+                queries.append(f"{search_name} {target_period}{scope_terms_zh} 发电量 年度报告")
         else:
             is_portuguese = country in {"brazil", "brasil", "portugal"}
             if is_portuguese:
@@ -196,37 +204,37 @@ class SourceDiscoveryService:
                     "", name, flags=re.I,
                 ).strip() or name
                 queries = [
-                    f'{portuguese_name} {target_period} geração anual',
-                    f'{portuguese_name} {target_period} relatório anual geração',
+                    f'{portuguese_name} {target_period}{scope_terms} geração anual',
+                    f'{portuguese_name} {target_period}{scope_terms} relatório anual geração',
                 ]
             elif is_turkish:
                 queries = [
-                    f'"{search_name}" {target_period} yıllık elektrik üretimi',
-                    f'"{search_name}" {target_period} yıllık faaliyet raporu üretim',
+                    f'"{search_name}" {target_period}{scope_terms} yıllık elektrik üretimi',
+                    f'"{search_name}" {target_period}{scope_terms} yıllık faaliyet raporu üretim',
                 ]
             elif is_arabic:
                 queries = [
-                    f'"{search_name}" {target_period} إنتاج الكهرباء السنوي',
-                    f'"{search_name}" {target_period} التقرير السنوي إنتاج الكهرباء',
+                    f'"{search_name}" {target_period}{scope_terms_zh} إنتاج الكهرباء السنوي',
+                    f'"{search_name}" {target_period}{scope_terms_zh} التقرير السنوي إنتاج الكهرباء',
                 ]
             else:
                 queries = [
-                    f'"{name}" {target_period} annual generation',
-                    f'"{canonical}" {target_period} annual generation annual report',
+                    f'"{name}" {target_period}{scope_terms} annual generation',
+                    f'"{canonical}" {target_period}{scope_terms} annual generation annual report',
                 ]
             if operator:
                 if is_portuguese:
-                    queries.append(f'{operator} {target_period} geração {portuguese_name}')
+                    queries.append(f'{operator} {target_period}{scope_terms} geração {portuguese_name}')
                 elif is_turkish:
                     queries.append(
-                        f'"{operator}" {target_period} yıllık üretim raporu "{search_name}"'
+                        f'"{operator}" {target_period}{scope_terms} yıllık üretim raporu "{search_name}"'
                     )
                 elif is_arabic:
                     queries.append(
-                        f'"{operator}" {target_period} التقرير السنوي إنتاج "{search_name}"'
+                        f'"{operator}" {target_period}{scope_terms_zh} التقرير السنوي إنتاج "{search_name}"'
                     )
                 else:
-                    queries.append(f'"{operator}" {target_period} annual report "{name}" generation')
+                    queries.append(f'"{operator}" {target_period}{scope_terms} annual report "{name}" generation')
         # 只有已成功/已人工接受的官方域名才参与站内检索；未经核实的搜索结果
         # 不能自行变成“官方站点”。将它放在最后，保留一条泛查询防止旧域名失效。
         site_queries: list[str] = []
@@ -239,15 +247,16 @@ class SourceDiscoveryService:
                 # Publisher 名称并入 site: 查询，既不丢官网约束，也能提升
                 # 大型集团公告中“电站简称未出现在标题”的召回率。
                 publisher_term = f"{profile_publisher} " if profile_publisher else ""
-                site_queries.append(f"site:{domain} {publisher_term}{search_name} {target_period} 发电量")
+                site_queries.append(f"site:{domain} {publisher_term}{search_name} {target_period}{scope_terms_zh} 发电量")
             elif metric == "generation":
                 publisher_term = f' "{profile_publisher}"' if profile_publisher else ""
-                site_queries.append(f'site:{domain}{publisher_term} "{search_name}" {target_period} generation')
+                site_queries.append(f'site:{domain}{publisher_term} "{search_name}" {target_period}{scope_terms} generation')
             else:
                 site_queries.append(f'site:{domain} "{search_name}" {target_period} capacity')
         return TaskIntent(
             station_name=name,
             target_period=str(target_period),
+            period_type=period_type,
             metric=metric,
             source_policy="official_or_authority",
             # 已验证官方域名的站内查询优先于第三条泛查询，但绝不取代主查询。
@@ -255,9 +264,11 @@ class SourceDiscoveryService:
         )
 
     @staticmethod
-    def build_generation_intent(station: dict[str, Any], target_period: str) -> TaskIntent:
+    def build_generation_intent(
+        station: dict[str, Any], target_period: str, period_type: str = "calendar_year",
+    ) -> TaskIntent:
         """兼容原 API 名称；新调用可指定任何已支持指标。"""
-        return SourceDiscoveryService.build_intent(station, target_period, "generation")
+        return SourceDiscoveryService.build_intent(station, target_period, "generation", period_type)
 
     def _station(self, entity_id: str) -> dict[str, Any]:
         row = self.conn.execute(
@@ -289,6 +300,7 @@ class SourceDiscoveryService:
         task = {
             "entity_id": station["entity_id"], "entity_name": station["canonical_name"],
             "country": station.get("country"), "target_period": intent.target_period,
+            "period_type": intent.period_type,
             "metric": intent.metric,
         }
         direct: list[dict[str, Any]] = []
@@ -373,7 +385,7 @@ class SourceDiscoveryService:
     ) -> SourceDiscoveryResponse:
         """执行一次独立、可审计的来源发现。"""
         station = build_station_identity_profile(self.conn, self._station(request.entity_id)).station_context()
-        profile_intent = self.build_intent(station, request.target_period, request.metric)
+        profile_intent = self.build_intent(station, request.target_period, request.metric, request.period_type)
         if intent is None:
             resolved_intent = profile_intent
         else:
@@ -382,6 +394,7 @@ class SourceDiscoveryService:
             resolved_intent = TaskIntent(
                 station_name=intent.station_name or profile_intent.station_name,
                 target_period=intent.target_period,
+                period_type=intent.period_type,
                 metric=intent.metric,
                 source_policy=intent.source_policy,
                 auto_execute=intent.auto_execute,
@@ -389,8 +402,12 @@ class SourceDiscoveryService:
                     (*profile_intent.query_hints, *intent.query_hints)
                 ))[:3],
             )
-        if resolved_intent.target_period != str(request.target_period) or resolved_intent.metric != request.metric:
-            raise ValueError("Discovery intent 必须与请求的目标时期和指标一致")
+        if (
+            resolved_intent.target_period != str(request.target_period)
+            or resolved_intent.metric != request.metric
+            or resolved_intent.period_type != request.period_type
+        ):
+            raise ValueError("Discovery intent 必须与请求的目标年份、期间类型和指标一致")
         providers = set(request.allowed_providers)
         if not request.network_allowed:
             return SourceDiscoveryResponse(
@@ -481,6 +498,7 @@ class TaskSourceDiscoveryAdapter:
             task_id=str(task.get("task_id") or "").strip() or None,
             entity_id=str(task.get("entity_id") or ""),
             target_period=str(task.get("target_period") or ""),
+            period_type=str(task.get("period_type") or "calendar_year"),
             metric=str(task.get("metric") or "generation"),
             source_policy=str(task.get("source_policy") or "official_or_authority"),
             query_hints=tuple(str(item) for item in task.get("query_hints", []) if item),

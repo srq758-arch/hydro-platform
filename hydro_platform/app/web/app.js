@@ -751,10 +751,19 @@ async function discoverTrustedSources(entityId, presetYear = null) {
     alert('年份必须为四位数字。');
     return;
   }
+  const enteredPeriodType = prompt('输入期间类型：calendar_year=自然年，fiscal_year=财政年度', 'calendar_year');
+  if (enteredPeriodType === null) return;
+  const periodType = enteredPeriodType.trim().toLowerCase() || 'calendar_year';
+  if (!['calendar_year', 'fiscal_year'].includes(periodType)) {
+    alert('期间类型只能是 calendar_year（自然年）或 fiscal_year（财政年度）。');
+    return;
+  }
 
   showModal('正在智能发现可信来源', '<div class="spinner">正在融合 DeepSeek 联网搜索、程序搜索与 GEM 外链…</div>', { width: '760px' });
   try {
-    const result = await api().discover_trusted_sources(entityId, year, 10);
+    // 旧桌面缓存曾调用 api().discover_trusted_sources(entityId, year, 10)，
+    // 第四个参数新增 periodType，省略时仍由 API 默认 calendar_year。
+    const result = await api().discover_trusted_sources(entityId, year, 10, periodType);
     if (!result.success) throw new Error(result.error || '来源发现失败');
     const items = result.items || [];
     const reviewItems = result.review_items || [];
@@ -783,7 +792,7 @@ async function discoverTrustedSources(entityId, presetYear = null) {
         <td><span class="badge-status st-neutral">${esc(item.source_type || 'reference')}</span><br><span style="font-size:12px;color:var(--text-muted)">${esc(channel)}</span></td>
         <td><span class="badge-status ${accessClass}">${access}</span></td>
         <td style="max-width:260px;font-size:12px;color:var(--text-muted)">${period}<br>${esc(item.match_reason || '')}${item.relevance_evidence ? `<br><span style="color:var(--text)">证据：${esc(item.relevance_evidence)}</span>` : ''}<br><span>综合评分：${score}</span></td>
-        <td style="white-space:nowrap"><a class="btn btn-outline btn-sm" href="${esc(url)}" target="_blank">查看核实</a> <button class="btn btn-primary btn-sm" onclick="useDiscoveredSource('${entityId}','${year}','${encodedUrl}','${encodedTitle}','${encodedStationName}')">使用此来源</button></td>
+        <td style="white-space:nowrap"><a class="btn btn-outline btn-sm" href="${esc(url)}" target="_blank">查看核实</a> <button class="btn btn-primary btn-sm" onclick="useDiscoveredSource('${entityId}','${year}','${periodType}','${encodedUrl}','${encodedTitle}','${encodedStationName}')">使用此来源</button></td>
       </tr>`;
     }).join('') : '<tr><td colspan="5" class="empty">未找到同时匹配电站、年份、年度发电量且可访问的来源。不会创建采集任务。</td></tr>';
     const reviewRows = reviewItems.map(item => {
@@ -798,7 +807,7 @@ async function discoverTrustedSources(entityId, presetYear = null) {
         <td><span class="badge-status st-warning">待人工核实</span><br><span style="font-size:12px;color:var(--text-muted)">${esc(item.source_type || 'reference')}</span></td>
         <td><span class="badge-status st-neutral">${access}</span></td>
         <td style="max-width:300px;font-size:12px;color:var(--text-muted)">${esc(reason)}</td>
-        <td style="white-space:nowrap;min-width:205px"><a class="btn btn-outline btn-sm" style="white-space:nowrap;display:inline-flex" href="${esc(url)}" target="_blank">打开核实</a> <button class="btn btn-primary btn-sm" style="white-space:nowrap" onclick="useReviewedLead('${entityId}','${year}','${encodedUrl}','${encodedTitle}','${encodedStationName}')">已核实，带入新增数据</button></td>
+        <td style="white-space:nowrap;min-width:205px"><a class="btn btn-outline btn-sm" style="white-space:nowrap;display:inline-flex" href="${esc(url)}" target="_blank">打开核实</a> <button class="btn btn-primary btn-sm" style="white-space:nowrap" onclick="useReviewedLead('${entityId}','${year}','${periodType}','${encodedUrl}','${encodedTitle}','${encodedStationName}')">已核实，带入新增数据</button></td>
       </tr>`;
     }).join('');
     const excludedRows = excludedItems.map(item => {
@@ -850,7 +859,7 @@ async function discoverTrustedSources(entityId, presetYear = null) {
       <table class="data-table"><thead><tr><th>来源</th><th>等级 / 发现方式</th><th>访问状态</th><th>匹配证据</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>
       ${reviewRows ? `<div style="margin-top:18px"><div style="font-weight:600;margin-bottom:8px">待人工核实线索</div><p style="font-size:12px;color:var(--text-muted);margin:0 0 8px">这些链接确实由搜索发现并可访问，但未通过自动年度校验。打开核实后，只有您确认它对应目标电站、年份与全年实际发电量，才可带入新增数据。</p><table class="data-table"><thead><tr><th>来源</th><th>状态</th><th>访问状态</th><th>未通过原因</th><th>操作</th></tr></thead><tbody>${reviewRows}</tbody></table></div>` : ''}
       ${excludedRows ? `<details style="margin-top:18px"><summary style="cursor:pointer;font-weight:600">已排除 / 不可用审计项（${excludedItems.length}）</summary><p style="font-size:12px;color:var(--text-muted);margin:8px 0">这些链接保留用于解释发现结果；没有“使用此来源”按钮，不能直接创建任务或进入正式数据。</p><table class="data-table"><thead><tr><th>来源</th><th>状态</th><th>访问状态</th><th>排除原因</th><th>操作</th></tr></thead><tbody>${excludedRows}</tbody></table></details>` : ''}`;
-    showModal(`智能发现可信来源 · ${esc(result.entity_name || entityId)} · ${esc(year)}`, content, {
+    showModal(`智能发现可信来源 · ${esc(result.entity_name || entityId)} · ${esc(year)} · ${periodType === 'fiscal_year' ? '财政年度' : '自然年'}`, content, {
       width: '920px', footer: '<button class="btn btn-primary" onclick="closeModal()">关闭</button>'
     });
   } catch (e) {
@@ -860,9 +869,10 @@ async function discoverTrustedSources(entityId, presetYear = null) {
   }
 }
 
-function useDiscoveredSource(entityId, year, encodedUrl, encodedTitle, encodedStationName) {
+function useDiscoveredSource(entityId, year, periodType, encodedUrl, encodedTitle, encodedStationName) {
   sessionStorage.setItem('prefill_entity_id', entityId);
   if (year) sessionStorage.setItem('prefill_year', year);
+  sessionStorage.setItem('prefill_period_type', periodType || 'calendar_year');
   sessionStorage.setItem('prefill_url', decodeURIComponent(encodedUrl));
   sessionStorage.setItem('prefill_source_title', decodeURIComponent(encodedTitle));
   sessionStorage.setItem('prefill_station_name', decodeURIComponent(encodedStationName || entityId));
@@ -872,10 +882,10 @@ function useDiscoveredSource(entityId, year, encodedUrl, encodedTitle, encodedSt
   navigate('add-data', { __skipRestore: true });
 }
 
-function useReviewedLead(entityId, year, encodedUrl, encodedTitle, encodedStationName) {
+function useReviewedLead(entityId, year, periodType, encodedUrl, encodedTitle, encodedStationName) {
   const approved = confirm('请确认：您已核实该来源对应目标电站、目标年份及全年实际发电量。确认后仅带入“新增数据”页面，仍需由您点击“开始下载并处理”才会创建采集任务。');
   if (!approved) return;
-  useDiscoveredSource(entityId, year, encodedUrl, encodedTitle, encodedStationName);
+  useDiscoveredSource(entityId, year, periodType, encodedUrl, encodedTitle, encodedStationName);
 }
 
 // ---------- 数据缺口 ----------
@@ -1446,6 +1456,13 @@ async function renderAddData() {
           <input type="number" id="input-target-year" placeholder="2024" min="1900" max="2100"
             style="width:100%;padding:8px;border:1px solid var(--border);border-radius:var(--radius-sm)">
         </div>
+        <div class="form-group">
+          <label>统计口径 *</label>
+          <select id="input-period-type" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:var(--radius-sm)">
+            <option value="calendar_year">自然年（1月—12月）</option>
+            <option value="fiscal_year">财政年度（按发布方财年）</option>
+          </select>
+        </div>
       </div>
       <div style="font-size:12px;color:var(--text-muted);margin-top:8px">
         ⚠️ 必须指定电站和年份才能启动可信 Pipeline 流程
@@ -1558,6 +1575,7 @@ async function renderAddData() {
   // 检查是否有预填参数（从数据缺口页面跳转过来）
   const prefillEntityId = sessionStorage.getItem('prefill_entity_id');
   const prefillYear = sessionStorage.getItem('prefill_year');
+  const prefillPeriodType = sessionStorage.getItem('prefill_period_type') || 'calendar_year';
   const prefillUrl = sessionStorage.getItem('prefill_url');
   const prefillSourceTitle = sessionStorage.getItem('prefill_source_title');
   const prefillStationName = sessionStorage.getItem('prefill_station_name');
@@ -1585,6 +1603,7 @@ async function renderAddData() {
     // 清除 sessionStorage
     sessionStorage.removeItem('prefill_entity_id');
     sessionStorage.removeItem('prefill_year');
+    sessionStorage.removeItem('prefill_period_type');
 
     // 延迟执行，等待 DOM 渲染完成
     setTimeout(async () => {
@@ -1611,6 +1630,10 @@ async function renderAddData() {
           const yearInput = el('input-target-year');
           if (yearInput) {
             yearInput.value = prefillYear;
+          }
+          const periodTypeInput = el('input-period-type');
+          if (periodTypeInput) {
+            periodTypeInput.value = prefillPeriodType;
           }
 
           // 高亮提示
@@ -2132,6 +2155,7 @@ async function startDownloadTask() {
   const source = el('input-source-url').value.trim();
   const entityId = el('input-station-id').value.trim();
   const targetYear = el('input-target-year').value.trim();
+  const periodType = (el('input-period-type')?.value || 'calendar_year');
 
   if (!entityId || !targetYear) {
     alert('请先选择目标电站和年份');
@@ -2152,6 +2176,7 @@ async function startDownloadTask() {
     const result = await api().start_task({
       entity_id: entityId,
       target_period: targetYear,
+      period_type: periodType,
       type: 'download_url',
       url: url,
       source_title: source,
@@ -2221,6 +2246,7 @@ async function startSingleFileTask() {
   const source = el('input-source-file').value.trim();
   const entityId = el('input-station-id').value.trim();
   const targetYear = el('input-target-year').value.trim();
+  const periodType = (el('input-period-type')?.value || 'calendar_year');
 
   if (!entityId || !targetYear) {
     alert('请先选择目标电站和年份');
@@ -2241,6 +2267,7 @@ async function startSingleFileTask() {
     const result = await api().start_task({
       entity_id: entityId,
       target_period: targetYear,
+      period_type: periodType,
       type: 'upload_file',
       file_path: filePath,
       source_title: source,
@@ -4002,7 +4029,7 @@ async function renderTasks() {
                   <tr>
                     <td><code style="font-size:11px">${esc(t.task_id.substring(0, 12))}...</code></td>
                     <td>${esc(t.entity_name || t.entity_id)}</td>
-                    <td>${esc(t.target_period || '—')}</td>
+                    <td>${esc(t.target_period || '—')}<br><span style="font-size:11px;color:var(--text-muted)">${t.period_type === 'fiscal_year' ? '财政年度' : '自然年'}</span></td>
                     <td><span class="badge-status st-neutral">${esc(t.task_type || 'auto')}</span></td>
                     <td><span class="badge-status ${statusClass}">${esc(t.status)}</span></td>
                     <td>${esc(t.failure_stage || '—')}</td>
@@ -4036,7 +4063,7 @@ function showTaskDetail(encodedTaskId) {
   const content = `
     <div class="form-group"><label>任务 ID</label><code>${esc(task.task_id)}</code></div>
     <div class="form-group"><label>实体</label><div>${esc(task.entity_name || task.entity_id)} <span style="color:var(--text-muted)">(${esc(task.entity_id)})</span></div></div>
-    <div class="form-group"><label>类型 / 期间</label><div>${esc(task.task_type)} / ${esc(task.target_period || '—')}</div></div>
+    <div class="form-group"><label>类型 / 期间</label><div>${esc(task.task_type)} / ${esc(task.target_period || '—')}（${task.period_type === 'fiscal_year' ? '财政年度' : '自然年'}）</div></div>
     <div class="form-group"><label>状态</label><div>${esc(task.status)}</div></div>
     <div class="form-group"><label>失败信息</label><div>${esc(task.failure_stage || '—')}${task.last_error ? `<br><span style="color:var(--text-muted)">${esc(task.last_error)}</span>` : ''}</div></div>
   `;

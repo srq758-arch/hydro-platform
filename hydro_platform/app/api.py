@@ -808,10 +808,10 @@ class Api:
         )
 
     @staticmethod
-    def _station_search_intent(station: dict, target_period: str):
+    def _station_search_intent(station: dict, target_period: str, period_type: str = "calendar_year"):
         """兼容 API 名称；查询族唯一实现位于统一 Discovery 服务。"""
         from hydro_platform.intelligence.source_discovery_service import SourceDiscoveryService
-        return SourceDiscoveryService.build_generation_intent(station, target_period)
+        return SourceDiscoveryService.build_generation_intent(station, target_period, period_type)
 
     def _discover_trusted_source_candidates(self, conn, *, station: dict, intent, agent, on_event=None) -> tuple[list[dict], list[dict], list[dict], list[str], int, list[dict]]:
         """唯一的可信来源发现入口；只写候选台账，绝不创建采集任务。"""
@@ -835,6 +835,7 @@ class Api:
             SourceDiscoveryRequest(
                 entity_id=station["entity_id"],
                 target_period=intent.target_period,
+                period_type=intent.period_type,
                 metric=intent.metric,
                 source_policy=intent.source_policy,
                 query_hints=intent.query_hints,
@@ -950,7 +951,7 @@ class Api:
                                           {"entity_id": station["entity_id"], "canonical_name": station["canonical_name"]})
             conn.commit()
             if not intent.query_hints:
-                intent = self._station_search_intent(station, intent.target_period)
+                intent = self._station_search_intent(station, intent.target_period, intent.period_type)
 
             def discovery_event(stage: str, payload: dict) -> None:
                 labels = {
@@ -979,9 +980,9 @@ class Api:
                 message += " " + "；".join(warnings)
             conn.execute(
                 """UPDATE intelligent_task_plans SET entity_id=?, target_period=?, metric=?, source_policy=?,
-                   auto_execute=?, status=?, intent_json=?, search_queries_json=?, candidate_json=?, error=NULL,
+                   period_type=?, auto_execute=?, status=?, intent_json=?, search_queries_json=?, candidate_json=?, error=NULL,
                    updated_at=? WHERE plan_id=?""",
-                (station["entity_id"], intent.target_period, intent.metric, intent.source_policy, int(intent.auto_execute),
+                (station["entity_id"], intent.target_period, intent.metric, intent.source_policy, intent.period_type, int(intent.auto_execute),
                  status, json.dumps(intent.to_dict(), ensure_ascii=False), json.dumps(list(intent.query_hints), ensure_ascii=False),
                  json.dumps(usable, ensure_ascii=False), now_iso(), plan_id),
             )
@@ -1034,7 +1035,7 @@ class Api:
         conn = self.get_db_connection()
         try:
             row = conn.execute(
-                "SELECT entity_id, target_period, status, candidate_json FROM intelligent_task_plans WHERE plan_id=?", (plan_id,)
+                "SELECT entity_id, target_period, period_type, status, candidate_json FROM intelligent_task_plans WHERE plan_id=?", (plan_id,)
             ).fetchone()
             if row is None:
                 return {"success": False, "error": "智能任务不存在"}
@@ -1050,6 +1051,7 @@ class Api:
         result = self.create_task(
             row["entity_id"], row["target_period"], "generation_annual",
             source_type="intelligent", user_specified_source=selected.get("final_url") or selected.get("url"),
+            period_type=row["period_type"] or "calendar_year",
         )
         if result.get("success"):
             conn = self.get_db_connection()
@@ -1363,7 +1365,8 @@ class Api:
         target_period: str,
         task_type: str = "generation_annual",
         source_type: str = "automatic",
-        user_specified_source: Optional[str] = None
+        user_specified_source: Optional[str] = None,
+        period_type: str = "calendar_year",
     ) -> Dict[str, Any]:
         """创建一个待处理的采集任务。
 
@@ -1378,8 +1381,11 @@ class Api:
             {"task_id": str, "status": "pending"}
         """
         from hydro_platform.common.clock import now_iso
-        from hydro_platform.common.enums import TaskType
+        from hydro_platform.common.enums import PeriodType, TaskType
         from hydro_platform.models.task import Task
+
+        if period_type not in {PeriodType.CALENDAR_YEAR.value, PeriodType.FISCAL_YEAR.value}:
+            return {"success": False, "error": "period_type 只能是 calendar_year 或 fiscal_year"}
 
         conn = self.get_db_connection()
         try:
@@ -1387,7 +1393,7 @@ class Api:
             task_type_enum = TaskType.STATION_GENERATION if task_type == "generation_annual" else TaskType.STATION_GENERATION
 
             # 使用 Task 模型的幂等 ID 生成方法
-            task_id = Task.derive_id(entity_id, task_type_enum, target_period)
+            task_id = Task.derive_id(entity_id, task_type_enum, target_period, period_type)
 
             # 检查任务是否已存在
             existing = conn.execute(
@@ -1408,11 +1414,11 @@ class Api:
             conn.execute(
                 """INSERT INTO tasks (
                     task_id, entity_id, entity_type, task_type,
-                    target_period, status, source_type, user_specified_source,
+                    target_period, period_type, status, source_type, user_specified_source,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (task_id, entity_id, "station", task_type_enum.value,
-                 target_period, "pending", source_type, user_specified_source, now, now)
+                 target_period, period_type, "pending", source_type, user_specified_source, now, now)
             )
             conn.commit()
 
@@ -1442,6 +1448,7 @@ class Api:
         source_title: Optional[str] = None,
         publisher: Optional[str] = None,
         expected: ContentKind = ContentKind.ANY,
+        period_type: str = "calendar_year",
     ) -> Dict[str, Any]:
         """统一可信导入入口：创建任务 → 走完整 Pipeline。
 
@@ -1484,9 +1491,11 @@ class Api:
             raise ValueError("必须提供 url 或 local_file 之一")
         if url and local_file:
             raise ValueError("url 和 local_file 不能同时提供")
+        if period_type not in {"calendar_year", "fiscal_year"}:
+            raise ValueError("period_type 只能是 calendar_year 或 fiscal_year")
 
         # 创建任务
-        task_id = Task.derive_id(entity_id, TaskType.STATION_GENERATION, target_period)
+        task_id = Task.derive_id(entity_id, TaskType.STATION_GENERATION, target_period, period_type)
         ref_url = url if url else f"file://{Path(local_file).absolute()}"
         conn = self.get_db_connection()
 
@@ -1500,6 +1509,7 @@ class Api:
                 entity_type=EntityType.STATION,
                 task_type=TaskType.STATION_GENERATION,
                 target_period=target_period,
+                period_type=period_type,
                 source_type="manual",
                 user_specified_source=ref_url,
             )
@@ -2432,6 +2442,7 @@ class Api:
         entity_id: str,
         target_period: str,
         limit: int = 10,
+        period_type: str = "calendar_year",
     ) -> Dict[str, Any]:
         """融合实际搜索、DeepSeek 原生搜索与 GEM 外链，返回可信候选。
 
@@ -2443,6 +2454,8 @@ class Api:
 
         if not entity_id or not target_period:
             return {"success": False, "error": "必须提供电站 ID 和四位目标年份", "items": []}
+        if period_type not in {"calendar_year", "fiscal_year"}:
+            return {"success": False, "error": "period_type 只能是 calendar_year 或 fiscal_year", "items": []}
         try:
             year = int(target_period)
         except (TypeError, ValueError):
@@ -2470,7 +2483,7 @@ class Api:
             if station is None:
                 return {"success": False, "error": f"未找到电站: {entity_id}", "items": []}
             station = dict(station)
-            intent = self._station_search_intent(station, str(year))
+            intent = self._station_search_intent(station, str(year), period_type)
             items, review_items, excluded_items, warnings, audited_count, provider_diagnostics = self._discover_trusted_source_candidates(
                 conn, station=station, intent=intent, agent=agent,
             )
@@ -2489,7 +2502,7 @@ class Api:
                 message += " " + "；".join(warnings)
             return {
                 "success": True, "entity_id": entity_id, "entity_name": station["canonical_name"],
-                "target_period": str(year), "items": items, "review_items": review_items,
+                "target_period": str(year), "period_type": period_type, "items": items, "review_items": review_items,
                 "excluded_items": excluded_items, "recommendation": recommendation,
                 "message": message,
                 "search_channels": ["official_gem", "authority", "sse_disclosure", "deepseek_native", "program_search"],
@@ -2501,6 +2514,9 @@ class Api:
         finally:
             conn.close()
 
-    def discover_official_sources(self, entity_id: str, target_period: Optional[str] = None, limit: int = 10) -> Dict[str, Any]:
+    def discover_official_sources(
+        self, entity_id: str, target_period: Optional[str] = None, limit: int = 10,
+        period_type: str = "calendar_year",
+    ) -> Dict[str, Any]:
         """兼容旧桌面缓存的别名；不再执行旧的 GEM-only 发现逻辑。"""
-        return self.discover_trusted_sources(entity_id, target_period or "", limit)
+        return self.discover_trusted_sources(entity_id, target_period or "", limit, period_type)

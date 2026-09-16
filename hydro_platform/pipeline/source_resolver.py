@@ -134,6 +134,7 @@ def resolve_sources_enhanced(
         "entity_id": task.entity_id,
         "entity_name": getattr(task, "entity_name", None) or _get_entity_name(conn, task.entity_id),
         "target_period": task.target_period,
+        "period_type": getattr(task, "period_type", "calendar_year"),
         "metric": "generation"  # 从 task_type 推断
     }
 

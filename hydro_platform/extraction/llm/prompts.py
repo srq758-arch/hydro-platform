@@ -24,6 +24,7 @@ SYSTEM_PROMPT = (
 USER_TEMPLATE = (
     "电站/项目名称：{entity_name}\n"
     "目标年份（若有）：{target_period}\n"
+    "目标期间口径：{period_type}\n"
     "----- 待抽取文本开始 -----\n"
     "{content}\n"
     "----- 待抽取文本结束 -----\n"
@@ -39,12 +40,14 @@ def build_extraction_prompt(
     *,
     entity_name: str | None = None,
     target_period: str | None = None,
+    period_type: str = "calendar_year",
 ) -> tuple[str, str]:
     """构造 (system, user) 提示。正文超限则截断。"""
     trimmed = (content or "")[:MAX_CONTENT_CHARS]
     user = USER_TEMPLATE.format(
         entity_name=entity_name or "（未提供）",
         target_period=target_period or "（未指定）",
+        period_type=period_type or "calendar_year",
         content=trimmed,
     )
     return SYSTEM_PROMPT, user

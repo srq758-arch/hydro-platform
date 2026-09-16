@@ -1,0 +1,3 @@
+-- v16 is executed structurally by migrations.py so interrupted/partial upgrades
+-- can safely resume. Existing tasks default to calendar_year; no historical
+-- task is reclassified as fiscal_year.

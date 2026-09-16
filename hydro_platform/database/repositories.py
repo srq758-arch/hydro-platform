@@ -96,16 +96,16 @@ class ProjectRepository:
 
 
 _TASK_COLUMNS = (
-    "task_id", "entity_id", "entity_type", "task_type", "target_period",
+    "task_id", "entity_id", "entity_type", "task_type", "target_period", "period_type",
     "status", "priority_tier", "collection_priority", "attempts",
     "max_attempts", "failure_stage", "last_error", "source_type",
     "user_specified_source", "created_at", "updated_at",
 )
 
 
-def _task_row(t: Task) -> tuple:
+def _task_row(t: Task, columns: tuple[str, ...] = _TASK_COLUMNS) -> tuple:
     d = t.model_dump()
-    return tuple(_enum_value(d.get(c)) for c in _TASK_COLUMNS)
+    return tuple(_enum_value(d.get(c)) for c in columns)
 
 
 class TaskRepository:
@@ -117,11 +117,16 @@ class TaskRepository:
     def upsert_many(self, tasks: Iterable[Task]) -> int:
         # 任务运行态由 TaskManager 状态机维护。重复建任务只能刷新静态元数据，
         # 不能把 success/running/failed、attempts 或失败审计重置回模型默认值。
-        cols = _TASK_COLUMNS
+        # 历史/最小化调用方可能只创建了 v1 tasks 表。生产库经过 v16
+        # 迁移后一定有 period_type，但保留此适配可让旧离线脚本继续读写，
+        # 同时不把财政年度字段静默写入不存在的列。
+        available = {row[1] for row in self.conn.execute("PRAGMA table_info(tasks)").fetchall()}
+        cols = tuple(column for column in _TASK_COLUMNS if column in available)
         updates = ", ".join(
             f"{c}=excluded.{c}"
-            for c in ("entity_id", "entity_type", "task_type", "target_period",
+            for c in ("entity_id", "entity_type", "task_type", "target_period", "period_type",
                       "priority_tier", "collection_priority", "updated_at")
+            if c in cols
         )
         updates += (
             ", source_type=CASE WHEN excluded.source_type='manual' "
@@ -134,7 +139,7 @@ class TaskRepository:
             f"INSERT INTO tasks ({', '.join(cols)}) VALUES ({placeholders}) "
             f"ON CONFLICT(task_id) DO UPDATE SET {updates}"
         )
-        rows = [_task_row(t) for t in tasks]
+        rows = [_task_row(t, cols) for t in tasks]
         self.conn.executemany(sql, rows)
         return len(rows)
 

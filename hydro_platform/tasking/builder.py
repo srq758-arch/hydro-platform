@@ -13,7 +13,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable
 
-from ..common.enums import EntityType, TaskStatus, TaskType
+from ..common.enums import EntityType, PeriodType, TaskStatus, TaskType
 from ..common.logging_setup import get_logger
 from ..database.connection import transaction
 from ..database.repositories import TaskRepository
@@ -28,22 +28,27 @@ def _mk_task(
     entity_type: EntityType,
     task_type: TaskType,
     target_period: str | None,
+    period_type: PeriodType = PeriodType.CALENDAR_YEAR,
     priority_tier: str | None,
     collection_priority: int | None,
 ) -> Task:
     return Task(
-        task_id=Task.derive_id(entity_id, task_type, target_period),
+        task_id=Task.derive_id(entity_id, task_type, target_period, period_type),
         entity_id=entity_id,
         entity_type=entity_type,
         task_type=task_type,
         target_period=target_period,
+        period_type=period_type,
         status=TaskStatus.PENDING,
         priority_tier=priority_tier,
         collection_priority=collection_priority,
     )
 
 
-def build_station_tasks(row: sqlite3.Row, *, years: Iterable[int]) -> list[Task]:
+def build_station_tasks(
+    row: sqlite3.Row, *, years: Iterable[int],
+    period_type: PeriodType = PeriodType.CALENDAR_YEAR,
+) -> list[Task]:
     """为单个电站行生成任务：各年份发电量 + 一次容量补采。"""
     eid = row["entity_id"]
     tier = row["priority_tier"]
@@ -54,6 +59,7 @@ def build_station_tasks(row: sqlite3.Row, *, years: Iterable[int]) -> list[Task]
             entity_type=EntityType.STATION,
             task_type=TaskType.STATION_GENERATION,
             target_period=str(year),
+            period_type=period_type,
             priority_tier=tier,
             collection_priority=prio,
         )

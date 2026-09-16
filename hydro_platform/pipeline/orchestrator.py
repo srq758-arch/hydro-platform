@@ -545,7 +545,8 @@ def _execute_pipeline(ctx: PipelineContext, task, tm: TaskManager, result: Pipel
         store = EvidenceStore(ctx.conn)
         queue = ReviewQueue(ctx.conn)
         vctx = ValidationContext(
-            entity_capacity_mw=capacity_mw, expected_year=expected_year
+            entity_capacity_mw=capacity_mw, expected_year=expected_year,
+            expected_period_type=getattr(task, "period_type", "calendar_year"),
         )
     except Exception as e:
         raise PipelineError(
@@ -1307,6 +1308,7 @@ def _rebuild_from_review(ctx, row, task=None):
         vctx.entity_capacity_mw = capacity_mw
     if task is not None:
         vctx.expected_year = _parse_year(task.target_period)
+        vctx.expected_period_type = getattr(task, "period_type", "calendar_year")
     val = validate_candidate(cand, vctx)  # 重跑校验，确保仍无硬阻断
     evidence_ids = payload.get("evidence_ids") or []
     eid = evidence_ids[0] if evidence_ids else ""
@@ -1321,6 +1323,7 @@ def _llm_candidates(ctx, parsed, task, src_id):
         ctx.llm_provider,
         entity_id=task.entity_id,
         target_period=task.target_period,
+        period_type=getattr(task, "period_type", "calendar_year"),
         task_id=task.task_id,
         source_id=src_id,
         locator="llm",

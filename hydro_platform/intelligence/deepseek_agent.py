@@ -22,6 +22,7 @@ class DeepSeekAgentError(RuntimeError):
 class TaskIntent:
     station_name: str
     target_period: str
+    period_type: str = "calendar_year"
     metric: str = "generation"
     source_policy: str = "official_or_authority"
     auto_execute: bool = False
@@ -37,6 +38,11 @@ class TaskIntent:
             raise DeepSeekAgentError("未能从任务中识别电站名称")
         if not re.fullmatch(r"\d{4}", target_period):
             raise DeepSeekAgentError("未能识别四位目标年份")
+        period_type = str(value.get("period_type") or "calendar_year").strip().lower()
+        if period_type not in {"calendar_year", "fiscal_year"}:
+            # 规划层只接受本次来源发现支持的两种年度口径；季度、月度等
+            # 不是当前单站年度采集任务的目标，不能被模型悄悄降级成年度。
+            period_type = "calendar_year"
         metric = str(value.get("metric") or "generation").strip().lower()
         if metric not in {"generation", "capacity"}:
             raise DeepSeekAgentError(f"暂不支持的指标: {metric}")
@@ -48,7 +54,7 @@ class TaskIntent:
             if isinstance(item, str) and item.strip()
         )[:5]
         return cls(
-            station_name=station_name, target_period=target_period, metric=metric,
+            station_name=station_name, target_period=target_period, period_type=period_type, metric=metric,
             source_policy=policy, auto_execute=bool(value.get("auto_execute", False)),
             query_hints=hints,
         )
@@ -80,7 +86,9 @@ class DeepSeekResponsesAgent:
             instructions=(
                 "你是水电数据任务规划器。只提取任务意图，不编造数据或 URL。"
                 "输出一个 JSON 对象，字段必须为 station_name、target_period、metric、"
-                "source_policy、auto_execute、query_hints。metric 只能是 generation 或 capacity；"
+                "period_type、source_policy、auto_execute、query_hints。period_type 只能是 calendar_year 或 fiscal_year；"
+                "默认使用 calendar_year，只有用户明确说财政年度/财年/fiscal year 时才使用 fiscal_year。"
+                "metric 只能是 generation 或 capacity；"
                 "source_policy 只能是 official_only 或 official_or_authority；"
                 "query_hints 最多五条、用于后续检索。"
             ),
@@ -107,13 +115,15 @@ class DeepSeekResponsesAgent:
                 for key in ("canonical_name", "local_name", "aliases", "country", "operator", "owner")
             },
             "target_period": intent.target_period,
+            "period_type": intent.period_type,
             "metric": intent.metric,
             "existing_queries": list(intent.query_hints),
         }
         data = self._json_response(
             instructions=(
                 "你是水电年度数据检索词规划器，不联网、不输出 URL。根据输入的 seedlist 名称、当地名称和运营方，"
-                "给出最多两条可直接交给网页搜索引擎的高精度检索词，用于寻找目标电站目标年份的全年发电量。"
+                "给出最多两条可直接交给网页搜索引擎的高精度检索词，用于寻找目标电站目标年份的目标年度口径发电量。"
+                "若 period_type=fiscal_year，必须加入 fiscal year/financial year/财政年度等口径词；不要把自然年结果当成财年。"
                 "第一条优先使用电站/工程的当地常用简称；第二条必须优先寻找实际披露该电站数据的运营公司或上市运营主体，"
                 "采用“主体名 + 年份 + 年发电量完成情况公告”这一类检索式（不要在这一条再附加电站名，以免搜索被季度新闻带偏），"
                 "而不是只写集团总发电量。"
@@ -148,6 +158,7 @@ class DeepSeekResponsesAgent:
         context = {
             "station": {key: station.get(key) for key in ("canonical_name", "local_name", "aliases", "country", "operator", "owner")},
             "target_period": intent.target_period,
+            "period_type": intent.period_type,
             "metric": intent.metric,
         }
         data = self._json_response(
@@ -184,6 +195,7 @@ class DeepSeekResponsesAgent:
             "station": {"canonical_name": station.get("canonical_name"), "aliases": [x for x in aliases if x],
                         "country": station.get("country"), "operator": station.get("operator"), "owner": station.get("owner")},
             "target_period": intent.target_period,
+            "period_type": intent.period_type,
             "metric": intent.metric,
             "source_policy": intent.source_policy,
             "query_hints": list(intent.query_hints),

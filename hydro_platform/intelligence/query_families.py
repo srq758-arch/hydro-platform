@@ -59,10 +59,13 @@ class QueryFamilyPlanner:
         station: dict[str, Any],
         target_period: str,
         metric: str = "generation",
+        period_type: str = "calendar_year",
         verified_domains: Iterable[str] = (),
         limit: int = 3,
     ) -> tuple[QueryVariant, ...]:
         year = _clean(target_period)
+        scope = " fiscal year" if period_type == "fiscal_year" else ""
+        scope_zh = " 财政年度" if period_type == "fiscal_year" else ""
         name_values = _names(station)
         name = name_values[0] if name_values else _clean(station.get("canonical_name"))
         canonical = name_values[-1] if name_values else name
@@ -72,12 +75,12 @@ class QueryFamilyPlanner:
         if metric == "capacity":
             variants.extend((
                 QueryVariant(
-                    f'"{name}" {year} installed capacity MW',
+                    f'"{name}" {year}{scope} installed capacity MW',
                     "station_capacity",
                     "电站名+目标年+装机容量",
                 ),
                 QueryVariant(
-                    f'"{canonical}" {year} capacity report',
+                    f'"{canonical}" {year}{scope} capacity report',
                     "capacity_report",
                     "标准名+目标年+容量报告",
                 ),
@@ -85,25 +88,25 @@ class QueryFamilyPlanner:
         elif chinese:
             variants.extend((
                 QueryVariant(
-                    f"{name} {year} 完成发电量",
+                    f"{name} {year}{scope_zh} 完成发电量",
                     "station_annual_generation",
                     "电站简称+目标年+完成发电量",
                 ),
                 QueryVariant(
-                    f"{name} {year} 全年 发电量",
+                    f"{name} {year}{scope_zh} 全年 发电量",
                     "station_full_year_generation",
                     "电站简称+目标年+全年口径",
                 ),
             ))
             if operator:
                 variants.append(QueryVariant(
-                    f"{operator} {year} 发电量完成情况公告",
+                    f"{operator} {year}{scope_zh} 发电量完成情况公告",
                     "operator_annual_disclosure",
                     "运营主体+目标年+发电量完成情况公告",
                 ))
             else:
                 variants.append(QueryVariant(
-                    f"{name} {year} 发电量 年度报告",
+                    f"{name} {year}{scope_zh} 发电量 年度报告",
                     "annual_report_index",
                     "电站简称+目标年+年度报告索引",
                 ))
@@ -122,12 +125,12 @@ class QueryFamilyPlanner:
                 ).strip() or name
                 variants.extend((
                     QueryVariant(
-                        f'{portuguese_name} {year} geração anual',
+                        f'{portuguese_name} {year}{scope} geração anual',
                         "station_annual_generation",
                         "电站名+目标年+葡语全年发电量",
                     ),
                     QueryVariant(
-                        f'{portuguese_name} {year} relatório anual geração',
+                        f'{portuguese_name} {year}{scope} relatório anual geração',
                         "annual_report_index",
                         "电站名+目标年+葡语年度报告",
                     ),
@@ -135,12 +138,12 @@ class QueryFamilyPlanner:
             elif is_turkish:
                 variants.extend((
                     QueryVariant(
-                        f'"{name}" {year} yıllık elektrik üretimi',
+                        f'"{name}" {year}{scope} yıllık elektrik üretimi',
                         "station_annual_generation",
                         "电站名+目标年+土耳其语年度发电量",
                     ),
                     QueryVariant(
-                        f'"{name}" {year} yıllık faaliyet raporu üretim',
+                        f'"{name}" {year}{scope} yıllık faaliyet raporu üretim',
                         "annual_report_index",
                         "电站名+目标年+土耳其语年度报告",
                     ),
@@ -148,12 +151,12 @@ class QueryFamilyPlanner:
             elif is_arabic:
                 variants.extend((
                     QueryVariant(
-                        f'"{name}" {year} إنتاج الكهرباء السنوي',
+                        f'"{name}" {year}{scope_zh} إنتاج الكهرباء السنوي',
                         "station_annual_generation",
                         "电站名+目标年+阿拉伯语年度发电量",
                     ),
                     QueryVariant(
-                        f'"{name}" {year} التقرير السنوي إنتاج الكهرباء',
+                        f'"{name}" {year}{scope_zh} التقرير السنوي إنتاج الكهرباء',
                         "annual_report_index",
                         "电站名+目标年+阿拉伯语年度报告",
                     ),
@@ -161,12 +164,12 @@ class QueryFamilyPlanner:
             else:
                 variants.extend((
                     QueryVariant(
-                        f'"{name}" {year} annual generation',
+                        f'"{name}" {year}{scope} annual generation',
                         "station_annual_generation",
                         "电站名+目标年+全年发电量",
                     ),
                     QueryVariant(
-                        f'"{canonical}" {year} annual report generation',
+                        f'"{canonical}" {year}{scope} annual report generation',
                         "annual_report_index",
                         "标准名+目标年+年度报告",
                     ),
@@ -174,25 +177,25 @@ class QueryFamilyPlanner:
             if operator:
                 if is_portuguese:
                     variants.append(QueryVariant(
-                        f'{operator} {year} geração {portuguese_name}',
+                        f'{operator} {year}{scope} geração {portuguese_name}',
                         "operator_annual_disclosure",
                         "运营主体+目标年+葡语年度披露",
                     ))
                 elif is_turkish:
                     variants.append(QueryVariant(
-                        f'"{operator}" {year} yıllık üretim raporu "{name}"',
+                        f'"{operator}" {year}{scope} yıllık üretim raporu "{name}"',
                         "operator_annual_disclosure",
                         "运营主体+目标年+土耳其语年度披露",
                     ))
                 elif is_arabic:
                     variants.append(QueryVariant(
-                        f'"{operator}" {year} التقرير السنوي إنتاج "{name}"',
+                        f'"{operator}" {year}{scope_zh} التقرير السنوي إنتاج "{name}"',
                         "operator_annual_disclosure",
                         "运营主体+目标年+阿拉伯语年度披露",
                     ))
                 else:
                     variants.append(QueryVariant(
-                        f'"{operator}" {year} annual report "{name}" generation',
+                        f'"{operator}" {year}{scope} annual report "{name}" generation',
                         "operator_annual_disclosure",
                         "运营主体+目标年+年度披露",
                     ))
@@ -247,6 +250,7 @@ class QueryFamilyPlanner:
                 station=station,
                 target_period=intent.target_period,
                 metric=intent.metric,
+                period_type=intent.period_type,
                 verified_domains=verified_domains,
                 limit=5,
             )

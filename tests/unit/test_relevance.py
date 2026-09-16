@@ -259,3 +259,33 @@ def test_portuguese_partial_current_year_is_not_rescued_by_prior_year_annual_sen
     assert result.eligible is False
     assert result.period_scope == "partial"
     assert "非全年" in result.reason
+
+
+def test_fiscal_year_candidate_is_accepted_only_for_explicit_fiscal_task():
+    candidate = {
+        "url": "https://example.test/aswan-annual-report.pdf",
+        "link_text": "Aswan High Dam Annual Report 2021/2022",
+        "metadata": {
+            "content_preview": (
+                "Aswan High Dam generated 10,329 GWh during fiscal year 2021/2022."
+            ),
+        },
+    }
+    station = {
+        "canonical_name": "Aswan High Dam",
+        "local_name": "السد العالي",
+        "aliases": ["Aswan High Dam", "السد العالي"],
+    }
+    verifier = CandidateRelevanceVerifier()
+
+    calendar_result = verifier.verify(candidate, station=station, target_period="2022")
+    fiscal_result = verifier.verify(
+        candidate, station=station, target_period="2022", period_type="fiscal_year"
+    )
+
+    assert calendar_result.eligible is False
+    assert calendar_result.period_scope == "fiscal_year"
+    assert "财政年度" in calendar_result.reason
+    assert fiscal_result.eligible is True
+    assert fiscal_result.period_scope == "fiscal_year"
+    assert "财政年度口径已确认" in fiscal_result.reason

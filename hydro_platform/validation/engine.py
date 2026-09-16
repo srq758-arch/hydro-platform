@@ -36,6 +36,7 @@ class ValidationContext:
 
     entity_capacity_mw: float | None = None
     expected_year: int | None = None
+    expected_period_type: PeriodType | str = PeriodType.CALENDAR_YEAR
     # 已存在的 (period_label, value_type, scope) 集合，用于重复检测
     existing_keys: set[tuple] = field(default_factory=set)
 
@@ -127,12 +128,25 @@ def _master_checks(
                 "period_label",
             )
 
-    # 财年/季度提示：可能与日历年口径不一致
-    if cand.period_type == PeriodType.FISCAL_YEAR:
+    expected_period_type = (
+        ctx.expected_period_type.value
+        if isinstance(ctx.expected_period_type, PeriodType)
+        else str(ctx.expected_period_type or PeriodType.CALENDAR_YEAR.value)
+    )
+    # 期间口径是任务契约的一部分：自然年任务不得把财年冒充全年，
+    # 财年任务也不能接受模型抽出的自然年或未明确口径。
+    if expected_period_type == PeriodType.CALENDAR_YEAR.value and cand.period_type == PeriodType.FISCAL_YEAR:
         result.add_issue(
             "YEAR_MISMATCH",
             "周期为财年(fiscal_year)，与日历年口径可能不一致",
             Severity.MEDIUM,
+            "period_type",
+        )
+    elif expected_period_type == PeriodType.FISCAL_YEAR.value and cand.period_type != PeriodType.FISCAL_YEAR:
+        result.add_issue(
+            "PERIOD_AMBIGUOUS",
+            "任务要求财政年度，但候选未识别为 fiscal_year",
+            Severity.HIGH,
             "period_type",
         )
     if "PERIOD_UNCLEAR" in cand.flags:

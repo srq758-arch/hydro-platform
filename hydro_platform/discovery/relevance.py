@@ -61,6 +61,10 @@ _DATE_LIKE_PARTIAL_TERMS = frozenset({
     "junho de", "julho de", "agosto de", "setembro de", "outubro de",
     "novembro de", "dezembro de",
 })
+_FISCAL_SCOPE_TERMS = frozenset({
+    "fiscal year", "fiscal-year", "financial year", "financial-year",
+    "财政年度", "财年", "会计年度", "fy",
+})
 _EXCLUSION_TERMS = (
     "安全责任", "责任人名单", "任命", "招标", "中标", "采购", "招聘",
     "design generation", "设计年发电量", "预计发电量", "预测发电量",
@@ -215,6 +219,7 @@ class CandidateRelevanceVerifier:
             score = 0
             score += 5 if target_year and target_year in context else 0
             score += 4 if any(term.lower() in lowered for term in _ANNUAL_SCOPE_TERMS) else 0
+            score += 4 if CandidateRelevanceVerifier._fiscal_scope_evidence(context, target_year) else 0
             score -= 5 if any(term.lower() in lowered for term in _PARTIAL_SCOPE_TERMS) else 0
             score += 3 if any(str(alias).lower() in lowered for alias in aliases) else 0
             ranked.append((score, context))
@@ -245,6 +250,25 @@ class CandidateRelevanceVerifier:
         return "unknown", None
 
     @staticmethod
+    def _fiscal_scope_evidence(context: str, target_year: str = "") -> str | None:
+        """识别明确的财政年度口径，而不是把普通 annual report 当成财年。"""
+        lowered = context.lower()
+        for term in _FISCAL_SCOPE_TERMS:
+            match = re.search(rf"(?<![a-z]){re.escape(term)}(?![a-z])", lowered, re.I)
+            if match:
+                return context[match.start():match.end()]
+        # 很多官方报表只写 ``2021/2022`` 或 ``FY2022``，不重复写 fiscal year。
+        if target_year:
+            year = re.escape(str(target_year))
+            range_match = re.search(rf"(?:19|20)\d{{2}}\s*[/–—-]\s*{year}\b", context)
+            if range_match:
+                return range_match.group(0)
+            fy_match = re.search(rf"\bFY\s*{year}\b", context, re.I)
+            if fy_match:
+                return fy_match.group(0)
+        return None
+
+    @staticmethod
     def _scope_near_generation(
         text: str, *, target_year: str = "", aliases: Iterable[str] = (), width: int = 180,
     ) -> tuple[str, str | None]:
@@ -267,6 +291,7 @@ class CandidateRelevanceVerifier:
                 annual = next((item for item in CandidateRelevanceVerifier._annual_scope_terms(target_year)
                                if item.lower() in lowered), None)
                 partial = next((item for item in _PARTIAL_SCOPE_TERMS if item.lower() in lowered), None)
+                fiscal = CandidateRelevanceVerifier._fiscal_scope_evidence(window, target_year)
                 # 月名常常只是报告日期/历史日期。若同一证据窗已有目标年份的
                 # 全年表达（例如 “Em 2023 ... produção ... 5 de maio de 1984”），
                 # 年度证据优先；真正的 “Em janeiro de 2024 ... gerou” 没有全年
@@ -282,6 +307,8 @@ class CandidateRelevanceVerifier:
                 if partial:
                     # 明确的季度/月度口径比同窗中宽泛的“年度”背景词优先。
                     candidates.append((score + 2, "partial", partial))
+                elif fiscal:
+                    candidates.append((score + 3, "fiscal_year", fiscal))
                 elif annual:
                     candidates.append((score + 1, "annual", annual))
                 else:
@@ -334,7 +361,12 @@ class CandidateRelevanceVerifier:
             return best[:600]
         return context[:600]
 
-    def verify(self, candidate: dict, *, station: dict, target_period: str, metric: str = "generation") -> RelevanceResult:
+    def verify(
+        self, candidate: dict, *, station: dict, target_period: str,
+        metric: str = "generation", period_type: str = "calendar_year",
+    ) -> RelevanceResult:
+        if period_type not in {"calendar_year", "fiscal_year"}:
+            raise ValueError("period_type 只能是 calendar_year 或 fiscal_year")
         text = self._text(candidate)
         aliases = self._aliases(station)
         matched_alias = next((name for name in aliases if name.lower() in text), None)
@@ -356,10 +388,17 @@ class CandidateRelevanceVerifier:
                         False, 0.0, f"仅发现非全年口径：命中“{scope_evidence}”",
                         metric_context, period_scope,
                     )
-                if period_scope == "annual":
+                if (
+                    (period_type == "calendar_year" and period_scope == "annual")
+                    or (period_type == "fiscal_year" and period_scope == "fiscal_year")
+                ):
                     return RelevanceResult(
                         True, 0.72,
-                        "官方上市公司年度发电量公告；具体电站需在 PDF 正文中确认",
+                        (
+                            "官方上市公司年度发电量公告；具体电站需在 PDF 正文中确认"
+                            if period_type == "calendar_year"
+                            else "官方上市公司财政年度发电量公告；具体电站需在 PDF 正文中确认"
+                        ),
                         self._focused_evidence(text, target_year=year) or metric_context,
                         period_scope,
                     )
@@ -370,7 +409,14 @@ class CandidateRelevanceVerifier:
             return RelevanceResult(False, 0.0, "未发现年度发电量或年度报告语义", metric_context or self._excerpt(text, (matched_alias, year)), period_scope)
         if metric == "generation" and period_scope == "partial":
             return RelevanceResult(False, 0.0, f"仅发现非全年口径：命中“{scope_evidence}”", metric_context, period_scope)
-        if metric == "generation" and period_scope != "annual":
+        if metric == "generation" and period_type == "calendar_year" and period_scope == "fiscal_year":
+            return RelevanceResult(False, 0.0, f"仅发现财政年度口径：命中“{scope_evidence}”，不等同于自然年", metric_context, period_scope)
+        if metric == "generation" and period_type == "fiscal_year" and period_scope != "fiscal_year":
+            return RelevanceResult(
+                False, 0.0, "财政年度口径不明确：未找到财政年度或跨年财年范围证据",
+                metric_context or self._excerpt(text, (matched_alias, year)), period_scope,
+            )
+        if metric == "generation" and period_type == "calendar_year" and period_scope != "annual":
             return RelevanceResult(
                 False, 0.0, "年度口径不明确：未找到全年、年度或截至年末等范围证据",
                 metric_context or self._excerpt(text, (matched_alias, year)), period_scope,
@@ -380,7 +426,11 @@ class CandidateRelevanceVerifier:
         score += 0.20 if matched_alias else 0.0
         score += 0.15 if has_year else 0.0
         score += 0.10 if has_generation else 0.0
-        reason = f"全年口径已确认：命中电站、目标年份和年度发电量（范围证据：“{scope_evidence}”）"
+        reason = (
+            f"财政年度口径已确认：命中电站、目标年份和财政年度发电量（范围证据：“{scope_evidence}”）"
+            if period_type == "fiscal_year"
+            else f"全年口径已确认：命中电站、目标年份和年度发电量（范围证据：“{scope_evidence}”）"
+        )
         evidence = self._focused_evidence(text, target_year=year) if metric_context else self._excerpt(
             text, (matched_alias, year, *_GENERATION_TERMS, *_ANNUAL_REPORT_TERMS),
         )

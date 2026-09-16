@@ -25,6 +25,7 @@ D15修复：
 - v13: 五层来源管线与采集尝试 lineage（013_source_pipeline_contract.sql）
 - v14: 原子任务 worker 租约与心跳字段（014_task_lease_contract.sql）
 - v15: 已验证发布方画像及成功来源观察（015_publisher_profile.sql）
+- v16: 任务与智能规划显式统计周期口径（016_period_type_contract.sql）
 """
 
 from __future__ import annotations
@@ -58,6 +59,7 @@ MIGRATIONS = [
     (13, "013_source_pipeline_contract.sql", "添加五层来源管线与采集尝试 lineage", "verify_source_pipeline_contract_v13"),
     (14, "014_task_lease_contract.sql", "添加任务 worker 租约与心跳字段", "verify_task_lease_contract_v14"),
     (15, "015_publisher_profile.sql", "添加已验证发布方画像", "verify_publisher_profile_v15"),
+    (16, "016_period_type_contract.sql", "添加任务自然年/财政年度口径", "verify_period_type_contract_v16"),
 ]
 
 CURRENT_VERSION = max(v for v, _, _, _ in MIGRATIONS)
@@ -600,6 +602,21 @@ def verify_publisher_profile_v15(conn: sqlite3.Connection) -> tuple[bool, str]:
     return True, "v15 Publisher Profile 契约完整"
 
 
+def verify_period_type_contract_v16(conn: sqlite3.Connection) -> tuple[bool, str]:
+    """验证任务和智能规划都保存明确的年度统计口径。"""
+    success, message = verify_publisher_profile_v15(conn)
+    if not success:
+        return False, message
+    for table in ("tasks", "intelligent_task_plans"):
+        if not _table_exists(conn, table):
+            return False, f"{table} 表不存在"
+        if not _column_exists(conn, table, "period_type"):
+            return False, f"{table} 缺少 period_type 列"
+    if not _index_exists(conn, "idx_tasks_period_type"):
+        return False, "tasks 缺少期间口径索引: idx_tasks_period_type"
+    return True, "v16 任务期间口径契约完整"
+
+
 def _execute_v12_generation_domain_contract(conn: sqlite3.Connection, version: int) -> None:
     """逐列幂等升级，旧候选保持 NULL，禁止根据历史值猜测指标。"""
     conn.execute("SAVEPOINT migration_v12")
@@ -818,6 +835,34 @@ def _execute_v14_task_lease_contract(conn: sqlite3.Connection, version: int) -> 
         conn.execute("RELEASE SAVEPOINT migration_v14")
 
 
+def _execute_v16_period_type_contract(conn: sqlite3.Connection, version: int) -> None:
+    """为任务和智能规划补上显式自然年/财政年度字段。"""
+    conn.execute("SAVEPOINT migration_v16")
+    try:
+        _add_column_if_missing(conn, "tasks", "period_type", "TEXT NOT NULL DEFAULT 'calendar_year'")
+        _add_column_if_missing(
+            conn, "intelligent_task_plans", "period_type",
+            "TEXT NOT NULL DEFAULT 'calendar_year'",
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_period_type "
+            "ON tasks(entity_id, task_type, target_period, period_type)"
+        )
+        success, message = verify_period_type_contract_v16(conn)
+        if not success:
+            raise RuntimeError(f"迁移 v16 验证失败: {message}")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (?, ?)",
+            (version, now_iso()),
+        )
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT migration_v16")
+        conn.execute("RELEASE SAVEPOINT migration_v16")
+        raise
+    else:
+        conn.execute("RELEASE SAVEPOINT migration_v16")
+
+
 def _execute_v8_trustworthy_views(conn: sqlite3.Connection, version: int) -> None:
     """重建两个出口视图，统一执行 Candidate→Evidence→Document 链路校验。"""
     conn.execute("SAVEPOINT migration_v8")
@@ -943,6 +988,7 @@ VERIFY_FUNCTIONS = {
     'verify_source_pipeline_contract_v13': verify_source_pipeline_contract_v13,
     'verify_task_lease_contract_v14': verify_task_lease_contract_v14,
     'verify_publisher_profile_v15': verify_publisher_profile_v15,
+    'verify_period_type_contract_v16': verify_period_type_contract_v16,
 }
 
 
@@ -977,6 +1023,10 @@ def _execute_migration(
     if version == 14:
         _execute_v14_task_lease_contract(conn, version)
         logger.info("✓ 迁移 v14 完成：任务租约契约完整")
+        return
+    if version == 16:
+        _execute_v16_period_type_contract(conn, version)
+        logger.info("✓ 迁移 v16 完成：任务期间口径契约完整")
         return
 
     if filename is None:
@@ -1046,7 +1096,10 @@ def migrate(conn: sqlite3.Connection, target_version: Optional[int] = None) -> i
     current = _applied_version(conn)
 
     if current >= target_version:
-        if target_version >= 15:
+        if target_version >= 16:
+            success, message = verify_period_type_contract_v16(conn)
+            contract_name = "v16"
+        elif target_version >= 15:
             success, message = verify_publisher_profile_v15(conn)
             contract_name = "v15"
         elif target_version >= 14:

@@ -234,6 +234,7 @@ class TrustedSourceDiscovery:
                     self.verifier.verify(
                         candidate, station=station,
                         target_period=intent.target_period, metric=intent.metric,
+                        period_type=intent.period_type,
                     )
                     for candidate in raw_candidates
                 ]
@@ -293,6 +294,7 @@ class TrustedSourceDiscovery:
                     intent = TaskIntent(
                         station_name=intent.station_name,
                         target_period=intent.target_period,
+                        period_type=intent.period_type,
                         metric=intent.metric,
                         source_policy=intent.source_policy,
                         auto_execute=intent.auto_execute,
@@ -414,7 +416,8 @@ class TrustedSourceDiscovery:
                 audited.append(candidate)
                 continue
             relevance = self.verifier.verify(
-                candidate, station=station, target_period=intent.target_period, metric=intent.metric,
+                candidate, station=station, target_period=intent.target_period,
+                metric=intent.metric, period_type=intent.period_type,
             )
             enriched = {
                 **candidate,

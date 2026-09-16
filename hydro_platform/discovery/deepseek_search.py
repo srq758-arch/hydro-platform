@@ -34,6 +34,7 @@ class DeepSeekSourceFinder:
         intent = TaskIntent(
             station_name=station_name,
             target_period=period,
+            period_type=str(task.get("period_type") or "calendar_year"),
             metric=str(task.get("metric") or "generation"),
             source_policy="official_or_authority",
             query_hints=tuple(str(item) for item in task.get("query_hints", []) if item)[:3],
