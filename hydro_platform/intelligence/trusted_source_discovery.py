@@ -150,6 +150,51 @@ class TrustedSourceDiscovery:
             if on_event:
                 on_event(stage, payload)
 
+        # WebSearchProvider 的兼容 ``search`` 入口会在每次调用后更新
+        # ``last_diagnostics``/``last_metrics``。当首轮结果明显无关时，程序会
+        # 有界地补查一轮；如果直接读取最后一次状态，首轮真实查询就会从审计中
+        # 消失。这里按调用顺序累积诊断，并在完成事件中合并两轮指标。
+        search_diagnostics: list[dict[str, Any]] = []
+        search_metric_attempts: list[dict[str, Any]] = []
+
+        def run_program_search(queries: tuple[str, ...]) -> list[dict[str, Any]]:
+            try:
+                return self.web_search.search(queries)
+            finally:
+                raw_diagnostics = getattr(self.web_search, "last_diagnostics", [])
+                if isinstance(raw_diagnostics, list):
+                    search_diagnostics.extend(
+                        dict(item) for item in raw_diagnostics if isinstance(item, dict)
+                    )
+                raw_metrics = getattr(self.web_search, "last_metrics", {})
+                if isinstance(raw_metrics, dict) and raw_metrics:
+                    search_metric_attempts.append(dict(raw_metrics))
+
+        def merged_search_metrics() -> dict[str, Any]:
+            if not search_metric_attempts:
+                return {}
+            merged: dict[str, Any] = {"providers": {}, "estimated_cost": 0.0}
+            for attempt in search_metric_attempts:
+                providers = attempt.get("providers")
+                if isinstance(providers, dict):
+                    for provider, values in providers.items():
+                        if not isinstance(values, dict):
+                            continue
+                        target = merged["providers"].setdefault(provider, {})
+                        for key, value in values.items():
+                            if key == "estimated_cost":
+                                target[key] = float(target.get(key, 0.0)) + float(value or 0.0)
+                            elif isinstance(value, (int, float)):
+                                target[key] = int(target.get(key, 0)) + int(value)
+                            else:
+                                target[key] = value
+                merged["estimated_cost"] += float(attempt.get("estimated_cost") or 0.0)
+            # shared_ledger 是跨任务累计快照，不能相加；以最后一轮为准。
+            last_shared = search_metric_attempts[-1].get("shared_ledger")
+            if isinstance(last_shared, dict):
+                merged["shared_ledger"] = last_shared
+            return merged
+
         def program_search_with_bounded_retry() -> list[dict[str, Any]]:
             """搜索为空/明显无关时只按规则补查一次。
 
@@ -159,7 +204,7 @@ class TrustedSourceDiscovery:
             """
             attempted = tuple(intent.query_hints)
             try:
-                initial = self.web_search.search(attempted)
+                initial = run_program_search(attempted)
             except WebSearchError as exc:
                 diagnostics = getattr(self.web_search, "last_diagnostics", [])
                 has_provider_failure = any(
@@ -180,7 +225,7 @@ class TrustedSourceDiscovery:
                     "queries": list(retry_queries),
                     "families": [item.family for item in retry],
                 })
-                return self.web_search.search(retry_queries)
+                return run_program_search(retry_queries)
             if initial:
                 # 搜索结果标题/摘要已经明确全部不命中目标实体、年份或指标时，
                 # 立即使用第二查询族；原始结果仍保留，后续会进入 audited 审计项。
@@ -211,7 +256,7 @@ class TrustedSourceDiscovery:
                 })
                 # 不丢弃首轮结果：第二轮只是补充召回，首轮无关网页仍会在
                 # audited 中显示其排除原因，便于用户判断搜索质量。
-                return list(initial) + list(self.web_search.search(retry_queries))
+                return list(initial) + list(run_program_search(retry_queries))
             retry = QueryFamilyPlanner.rewrite_after_failure(
                 intent=intent, station=station, attempted_queries=attempted,
                 failure_code="empty_results",
@@ -225,7 +270,7 @@ class TrustedSourceDiscovery:
                 "queries": list(retry_queries),
                 "families": [item.family for item in retry],
             })
-            return self.web_search.search(retry_queries)
+            return run_program_search(retry_queries)
 
         # 英文 seedlist 名称与当地报道的简称、运营主体之间常没有一一对应关系。
         # 在实际搜索之前，请 DeepSeek 仅规划两条补充检索词；模型不返回 URL，
@@ -317,12 +362,9 @@ class TrustedSourceDiscovery:
                 # 始终走稳定的 ``search`` 入口，保证离线回放和第三方 provider
                 # 替身不会被新诊断接口绕过。内建 provider 会在同次调用记录诊断。
                 results = program_search_with_bounded_retry()
-                diagnostics = getattr(self.web_search, "last_diagnostics", [])
-                if not isinstance(diagnostics, list):
-                    diagnostics = []
-                search_event = {"count": len(results), "diagnostics": diagnostics}
-                metrics = getattr(self.web_search, "last_metrics", None)
-                if isinstance(metrics, dict) and metrics:
+                search_event = {"count": len(results), "diagnostics": search_diagnostics}
+                metrics = merged_search_metrics()
+                if metrics:
                     search_event["metrics"] = metrics
                 event("program_search_done", search_event)
                 record_leads("program_controlled_search", results)

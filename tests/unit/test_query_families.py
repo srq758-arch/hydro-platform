@@ -200,3 +200,51 @@ def test_trusted_discovery_retries_when_search_results_are_explicitly_irrelevant
     assert retry_events[0]["failure_code"] == "irrelevant"
     assert retry_events[0]["preserved_initial_count"] == 1
     assert search.search.call_count == 2
+
+
+def test_trusted_discovery_keeps_diagnostics_from_initial_and_retry_searches():
+    search = Mock()
+    diagnostics_by_call = [
+        [{"provider": "DuckDuckGo", "query": "首轮", "status": "ok", "count": 1}],
+        [{"provider": "DuckDuckGo", "query": "补查", "status": "ok", "count": 1}],
+    ]
+    metrics_by_call = [
+        {"providers": {"DuckDuckGo": {"calls": 1, "successes": 1, "empty": 0, "failures": 0, "estimated_cost": 0.0}}, "estimated_cost": 0.0},
+        {"providers": {"DuckDuckGo": {"calls": 1, "successes": 1, "empty": 0, "failures": 0, "estimated_cost": 0.0}}, "estimated_cost": 0.0},
+    ]
+
+    def search_side_effect(_queries):
+        index = search.search.call_count - 1
+        search.last_diagnostics = diagnostics_by_call[index]
+        search.last_metrics = metrics_by_call[index]
+        return ([{"url": "https://publisher.example/safety-notice.html", "title": "2024 年安全公告", "snippet": "安全责任名单"}]
+                if index == 0 else [{"url": "https://publisher.example/three-gorges-2024.pdf", "title": "三峡电站 2024 年度发电量报告", "snippet": "三峡电站 2024 年全年发电量报告"}])
+
+    search.search.side_effect = search_side_effect
+    probe = Mock()
+    probe.probe_many.side_effect = lambda values: [
+        {
+            **value,
+            "access_status": "reachable",
+            "status": "discovered",
+            "http_status": 200,
+            "final_url": value["url"],
+            "error": None,
+            "metadata": {"content_preview": value.get("snippet", "")},
+        }
+        for value in values
+    ]
+    events = []
+    TrustedSourceDiscovery(
+        agent=type("NoAgent", (), {"enabled": False})(),
+        web_search=search,
+        url_probe=probe,
+    ).discover(
+        intent=TaskIntent(station_name="三峡电站", target_period="2024", query_hints=("首轮",)),
+        station={"entity_id": "three-gorges", "canonical_name": "Three Gorges Dam", "local_name": "三峡电站", "country": "China"},
+        on_event=lambda stage, payload: events.append((stage, payload)),
+    )
+
+    done = next(payload for stage, payload in events if stage == "program_search_done")
+    assert [item["query"] for item in done["diagnostics"]] == ["首轮", "补查"]
+    assert done["metrics"]["providers"]["DuckDuckGo"]["calls"] == 2
