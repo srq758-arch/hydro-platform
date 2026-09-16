@@ -1,6 +1,6 @@
 """统一可信来源发现：多通道融合后必须以任务相关性为硬门槛。"""
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from hydro_platform.discovery.relevance import CandidateRelevanceVerifier
 from hydro_platform.app.api import Api
@@ -198,6 +198,66 @@ def test_engine_merges_native_program_and_gem_but_returns_only_qualified_candida
     assert search.search.call_args.args[0] == (
         "三峡电站 2023 发电量", "三峡工程 2023 年全年发电量", "长江电力 2023 三峡电站 年度报告",
     )
+
+
+def test_sse_discovery_uses_deterministic_operator_hint_without_deepseek():
+    official = _candidate(
+        "https://www.sse.com.cn/disclosure/listedinfo/announcement/c/new/2025-01-08/600900_20250108_8R1Z.pdf",
+        "长江电力2024年发电量完成情况公告",
+        method="sse_official_disclosure",
+    )
+    official["metadata"] = {
+        "issuer_name": "中国长江电力股份有限公司",
+        "security_code": "600900",
+    }
+    probe = Mock()
+    probe.probe_many.side_effect = lambda values: [
+        {
+            **value,
+            "access_status": "requires_browser",
+            "status": "discovered",
+            "http_status": 200,
+            "final_url": value["url"],
+            "error": "HTTP 200：PDF 链接返回 HTML，需要浏览器验证",
+            "metadata": {**(value.get("metadata") or {}), "document_mismatch": "expected_pdf_received_html"},
+        }
+        for value in values
+    ]
+    with patch("hydro_platform.intelligence.sse_disclosure.SseDisclosureProvider") as provider:
+        provider.return_value.discover.return_value = [official]
+        qualified, audited, warnings = TrustedSourceDiscovery(
+            agent=type("NoDeepSeek", (), {"enabled": False})(),
+            url_probe=probe,
+        ).discover(
+            intent=TaskIntent(
+                station_name="金沙江白鹤滩水电站",
+                target_period="2024",
+                metric="generation",
+                query_hints=("金沙江白鹤滩水电站 2024 发电量",),
+            ),
+            station={
+                "entity_id": "station_baihetan",
+                "canonical_name": "Baihetan hydroelectric plant",
+                "local_name": "金沙江白鹤滩水电站",
+                "country": "China",
+                "operator": "China Yangzi River Three Gorges Group",
+                "aliases": [],
+            },
+            enabled_providers={"sse_disclosure"},
+        )
+
+    assert warnings == []
+    assert len(qualified) == 1
+    assert qualified[0].url == official["url"]
+    provider.return_value.discover.assert_called_once_with(
+        issuers=[{
+            "security_code": "600900",
+            "issuer_name": "中国长江电力股份有限公司",
+            "issuer_source": "deterministic_operator_alias",
+        }],
+        target_year="2024",
+    )
+    assert audited
 
 
 def test_engine_keeps_relevant_real_search_result_when_model_returns_no_candidate():

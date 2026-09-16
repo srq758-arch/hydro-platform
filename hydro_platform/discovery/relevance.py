@@ -33,7 +33,8 @@ _ANNUAL_SCOPE_TERMS = (
     "السنوي", "عام 2022", "عام 2023", "عام 2024", "عام 2025",
 )
 _PARTIAL_SCOPE_TERMS = (
-    "一季度", "二季度", "三季度", "四季度", "上半年", "下半年", "月度", "当月", "单月",
+    "一季度", "二季度", "三季度", "四季度", "上半年", "下半年", "半年度", "半年报",
+    "月度", "当月", "单月",
     "季度", "截至6月", "截至 6 月", "截至9月", "截至 9 月", "截至10月", "截至 10 月",
     "截至11月", "截至 11 月", "january", "february", "march", "april", "may", "june",
     "july", "august", "september", "october", "november",
@@ -125,6 +126,37 @@ class CandidateRelevanceVerifier:
             if len(short_station) >= 3 and short_station not in values:
                 values.append(short_station)
         return values
+
+    @staticmethod
+    def _official_disclosure_identity(
+        candidate: dict, station: dict, aliases: Iterable[str],
+    ) -> bool:
+        """Whether an exchange disclosure is an operator-level station lead.
+
+        SSE annual generation announcements are often titled only with the
+        listed operator (for example ``长江电力2024年发电量完成情况公告``); the
+        individual station rows appear only in the PDF body.  Treat this narrow,
+        independently identified official candidate as a deferred station-match
+        lead.  It is never applied to ordinary search results or non-official
+        documents.
+        """
+        if str(candidate.get("discovery_method") or "") != "sse_official_disclosure":
+            return False
+        if str(candidate.get("source_type") or "").lower() != "official":
+            return False
+        metadata = candidate.get("metadata") or {}
+        code = str(metadata.get("security_code") or "").strip()
+        issuer = str(metadata.get("issuer_name") or "").lower()
+        if code != "600900" or "长江电力" not in issuer:
+            return False
+        station_text = " ".join(
+            [str(station.get(key) or "") for key in ("canonical_name", "local_name", "operator", "owner")]
+            + [str(item) for item in aliases]
+        ).lower()
+        return any(marker in station_text for marker in (
+            "three gorges", "yangzi", "yangtze", "中国三峡", "长江电力", "长江三峡",
+            "三峡", "白鹤滩", "溪洛渡", "乌东德", "向家坝",
+        ))
 
     @staticmethod
     def _text(candidate: dict) -> str:
@@ -269,10 +301,24 @@ class CandidateRelevanceVerifier:
         has_annual_report = any(term in text for term in _ANNUAL_REPORT_TERMS)
         period_scope, scope_evidence = self._scope_near_generation(text, target_year=year, aliases=aliases)
         excluded = next((term for term in _EXCLUSION_TERMS if term in text), None)
+        official_disclosure_identity = self._official_disclosure_identity(candidate, station, aliases)
 
         if excluded and not (has_generation and has_annual_report):
             return RelevanceResult(False, 0.0, f"背景或非目标资料：命中“{excluded}”", self._excerpt(text, (excluded,)), period_scope)
         if not matched_alias:
+            if official_disclosure_identity and has_year and has_generation:
+                if period_scope == "partial":
+                    return RelevanceResult(
+                        False, 0.0, f"仅发现非全年口径：命中“{scope_evidence}”",
+                        metric_context, period_scope,
+                    )
+                if period_scope == "annual":
+                    return RelevanceResult(
+                        True, 0.72,
+                        "官方上市公司年度发电量公告；具体电站需在 PDF 正文中确认",
+                        self._focused_evidence(text, target_year=year) or metric_context,
+                        period_scope,
+                    )
             return RelevanceResult(False, 0.0, "未找到目标电站名称、当地名称或别名", self._excerpt(text, aliases), period_scope)
         if not has_year:
             return RelevanceResult(False, 0.0, f"发电量证据附近未找到目标年份 {year}", metric_context or self._excerpt(text, (matched_alias,)), period_scope)

@@ -262,18 +262,39 @@ class TrustedSourceDiscovery:
         # 与 PDF 正文才是最终证据。
         if "sse_disclosure" in providers and str(station.get("country") or "").strip().lower() == "china":
             issuer_planner = getattr(self.agent, "suggest_listed_issuers", None)
-            if getattr(self.agent, "enabled", True) and callable(issuer_planner):
-                try:
-                    from .sse_disclosure import SseDisclosureProvider
-                    event("official_disclosure_search", {})
-                    issuers = issuer_planner(intent=intent, station=station)
-                    if isinstance(issuers, list):
-                        official = SseDisclosureProvider().discover(issuers=issuers, target_year=intent.target_period)
-                        record_leads("sse_disclosure", official)
-                        all_candidates.extend(with_lead(official))
-                        event("official_disclosure_search_done", {"count": len(official)})
-                except DeepSeekAgentError as exc:
-                    warnings.append(f"上市公告主体识别不可用：{exc}")
+            try:
+                from .sse_disclosure import SseDisclosureProvider, deterministic_issuer_hints
+
+                event("official_disclosure_search", {})
+                # 先加入可审计的身份映射，再用模型补充不确定的上市主体。
+                # 这样模型超时/返回空数组时，三峡系 seed 仍能走 600900 的
+                # 交易所目录；最终正文仍必须核验具体电站，绝不自动写事实。
+                issuers = deterministic_issuer_hints(station)
+                if getattr(self.agent, "enabled", True) and callable(issuer_planner):
+                    try:
+                        suggested = issuer_planner(intent=intent, station=station)
+                    except DeepSeekAgentError as exc:
+                        warnings.append(f"上市公告主体识别不可用：{exc}")
+                        suggested = []
+                    if isinstance(suggested, list):
+                        seen_codes = {str(item.get("security_code")) for item in issuers}
+                        for item in suggested:
+                            if not isinstance(item, dict):
+                                continue
+                            code = str(item.get("security_code") or "").strip()
+                            if code and code not in seen_codes:
+                                issuers.append(item)
+                                seen_codes.add(code)
+                            if len(issuers) >= 2:
+                                break
+                official = SseDisclosureProvider().discover(
+                    issuers=issuers[:2], target_year=intent.target_period,
+                )
+                record_leads("sse_disclosure", official)
+                all_candidates.extend(with_lead(official))
+                event("official_disclosure_search_done", {"count": len(official)})
+            except (ImportError, TypeError, ValueError) as exc:
+                warnings.append(f"上市公告通道不可用：{exc}")
 
         # 通道 A：DeepSeek 原生联网搜索。失败不阻断独立搜索通道。
         if "deepseek_native_web_search" in providers:

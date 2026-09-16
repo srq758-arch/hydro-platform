@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 import requests
 
@@ -61,7 +61,40 @@ class SseDisclosureProvider:
                     "source_type": "official", "document_type": "pdf",
                     "discovery_method": "sse_official_disclosure",
                     "match_reason": "上交所公开披露目录命中；将以 PDF 正文核验电站、年份和全年口径",
-                    "metadata": {"issuer_name": issuer.get("issuer_name"), "security_code": code,
-                                 "verify_pdf_text": True, "search_provider": "sse_official_disclosure"},
+                    "metadata": {
+                        "issuer_name": issuer.get("issuer_name"), "security_code": code,
+                        "issuer_source": issuer.get("issuer_source") or "model_or_user_hint",
+                        "verify_pdf_text": True, "search_provider": "sse_official_disclosure",
+                    },
                 })
         return values
+
+
+def deterministic_issuer_hints(station: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Return audited exchange issuer hints for well-known Chinese operators.
+
+    GEM seed rows often carry the English owner ``China Yangzi River Three Gorges
+    Group`` while the Shanghai exchange disclosures are filed by ``长江电力``
+    (600900).  DeepSeek may identify this relationship, but it is a stable
+    identity mapping rather than a fact extracted from the web.  The returned
+    value is only a directory query hint; the SSE title and PDF body remain the
+    evidence gates.
+    """
+    country = str(station.get("country") or "").strip().lower()
+    if country not in {"china", "中国", "cn"}:
+        return []
+    fields = " ".join(
+        str(station.get(key) or "")
+        for key in ("canonical_name", "local_name", "aliases", "operator", "owner")
+    ).lower()
+    three_gorges_markers = (
+        "three gorges", "yangzi", "yangtze", "中国三峡", "长江电力", "长江三峡",
+        "三峡", "白鹤滩", "溪洛渡", "乌东德", "向家坝",
+    )
+    if not any(marker in fields for marker in three_gorges_markers):
+        return []
+    return [{
+        "security_code": "600900",
+        "issuer_name": "中国长江电力股份有限公司",
+        "issuer_source": "deterministic_operator_alias",
+    }]
