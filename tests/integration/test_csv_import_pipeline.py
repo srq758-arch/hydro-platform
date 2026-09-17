@@ -128,6 +128,45 @@ def test_csv_review_approve_and_reject_complete_auditable_task_runs(monkeypatch,
     conn.close()
 
 
+def test_open_review_can_approve_after_parent_task_failed(monkeypatch, tmp_path):
+    """历史任务失败但复核仍 open 时，通过复核应先回到 needs_review。"""
+    monkeypatch.setenv("HYDRO_DATA_DIR", str(tmp_path))
+    api = Api(data_mode="test")
+    api.initialize()
+    conn = api.get_db_connection()
+    conn.execute(
+        "INSERT INTO stations(entity_id, canonical_name, country, capacity_mw) VALUES (?, ?, ?, ?)",
+        ("csv-recover", "CSV Recover", "CN", 1000),
+    )
+    conn.commit()
+    conn.close()
+
+    imported = api.import_csv_batch(
+        "entity_id,period_label,period_type,metric,generation_gwh,unit_raw,value_type,measurement_scope\n"
+        "csv-recover,2024,calendar_year,gross_generation,77.7,GWh,actual,plant\n"
+    )
+    review_id = imported["details"][0]["review_id"]
+    conn = api.get_db_connection()
+    task_id = conn.execute(
+        "SELECT task_id FROM review_items WHERE review_id = ?", (review_id,)
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE tasks SET status='failed', failure_stage='UNKNOWN', last_error='模拟失败' WHERE task_id = ?",
+        (task_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    result = api.approve_record(review_id)
+
+    assert result["status"] == "success"
+    conn = api.get_db_connection()
+    assert conn.execute(
+        "SELECT status FROM tasks WHERE task_id = ?", (task_id,)
+    ).fetchone()[0] == "success"
+    conn.close()
+
+
 def test_legacy_csv_review_without_task_is_adopted_on_approval(monkeypatch, tmp_path):
     """旧 CSV 复核项 task_id 为 NULL 时，审核动作按需补齐其父任务。"""
     monkeypatch.setenv("HYDRO_DATA_DIR", str(tmp_path))
