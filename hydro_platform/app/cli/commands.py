@@ -37,6 +37,51 @@ def get_db_path(db: Optional[str]) -> Path:
     return get_database_path("production")
 
 
+def _row_value(row, key: str, default=None):
+    """Read a repository row while keeping old pre-migration DBs usable."""
+    if isinstance(row, dict):
+        return row.get(key, default)
+    try:
+        if key in row.keys():
+            return row[key]
+    except (AttributeError, TypeError):
+        pass
+    return default
+
+
+def _task_from_row(task_row):
+    """Rehydrate the complete Task context used by the unified pipeline.
+
+    The CLI used to copy only the original scheduling fields, silently dropping
+    period/source context that the web API preserved.  Keeping this mapping in a
+    small tested helper prevents the compatibility entry point from changing the
+    task semantics while still defaulting fields absent from legacy schemas.
+    """
+    from hydro_platform.models.task import Task
+    from hydro_platform.common.enums import TaskStatus as TaskStatusEnum
+    from hydro_platform.common.clock import now_iso
+
+    return Task(
+        task_id=_row_value(task_row, "task_id"),
+        entity_id=_row_value(task_row, "entity_id"),
+        entity_type=_row_value(task_row, "entity_type"),
+        task_type=_row_value(task_row, "task_type"),
+        target_period=_row_value(task_row, "target_period"),
+        period_type=_row_value(task_row, "period_type", "calendar_year") or "calendar_year",
+        status=TaskStatusEnum(_row_value(task_row, "status", "pending")),
+        priority_tier=_row_value(task_row, "priority_tier"),
+        collection_priority=_row_value(task_row, "collection_priority"),
+        attempts=_row_value(task_row, "attempts", 0) or 0,
+        max_attempts=_row_value(task_row, "max_attempts", 3) or 3,
+        failure_stage=_row_value(task_row, "failure_stage"),
+        last_error=_row_value(task_row, "last_error"),
+        source_type=_row_value(task_row, "source_type", "automatic") or "automatic",
+        user_specified_source=_row_value(task_row, "user_specified_source"),
+        created_at=_row_value(task_row, "created_at") or now_iso(),
+        updated_at=_row_value(task_row, "updated_at") or now_iso(),
+    )
+
+
 @click.group()
 @click.version_option(version="1.0.0", prog_name="hydro-v1")
 def cli():
@@ -91,26 +136,8 @@ def run_task(task_id: str, db: Optional[str], verbose: bool):
                 conn.close()
                 return
 
-        # 将Row转换为Task对象
-        from hydro_platform.models.task import Task
-        from hydro_platform.common.enums import TaskStatus as TaskStatusEnum
-
-        task = Task(
-            task_id=task_row['task_id'],
-            entity_id=task_row['entity_id'],
-            entity_type=task_row['entity_type'],
-            task_type=task_row['task_type'],
-            target_period=task_row['target_period'],
-            status=TaskStatusEnum(task_row['status']),
-            priority_tier=task_row['priority_tier'],
-            collection_priority=task_row['collection_priority'],
-            attempts=task_row['attempts'],
-            max_attempts=task_row['max_attempts'],
-            failure_stage=task_row['failure_stage'],
-            last_error=task_row['last_error'],
-            created_at=task_row['created_at'],
-            updated_at=task_row['updated_at']
-        )
+        # 将 Row 转换为 Task 对象；必须保留期间口径与来源上下文。
+        task = _task_from_row(task_row)
 
         # 创建Pipeline上下文所需的依赖
         from hydro_platform.acquisition.router import AcquisitionRouter
