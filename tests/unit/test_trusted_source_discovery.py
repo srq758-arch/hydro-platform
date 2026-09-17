@@ -53,6 +53,36 @@ def test_search_aggregator_prefers_redirect_target_and_keeps_entry_alias():
     assert merged[0]["metadata"]["publisher_domain"] == "publisher.example"
 
 
+def test_search_aggregator_keeps_deepseek_enrichment_for_duplicate_program_url():
+    url = "https://publisher.example/reports/three-gorges-2024.pdf"
+    merged = SearchAggregator.merge([
+        {
+            "url": url,
+            "source_type": "reference",
+            "discovery_method": "program_search_result",
+            "link_text": "搜索结果",
+            "match_reason": "程序搜索结果；需人工核实",
+            "metadata": {"query": "三峡 2024 发电量"},
+        },
+        {
+            "url": url,
+            "source_type": "official",
+            "discovery_method": "deepseek_planned_web_search",
+            "link_text": "长江电力 2024 年发电量公告",
+            "match_reason": "DeepSeek 基于程序搜索结果判定为运营方官方公告",
+            "metadata": {"from_deepseek": True},
+        },
+    ])
+
+    assert len(merged) == 1
+    assert merged[0]["url"] == url
+    assert merged[0]["source_type"] == "official"
+    assert merged[0]["discovery_method"] == "deepseek_planned_web_search"
+    assert "DeepSeek" in merged[0]["match_reason"]
+    assert merged[0]["metadata"]["query"] == "三峡 2024 发电量"
+    assert merged[0]["metadata"]["from_deepseek"] is True
+
+
 def test_search_aggregator_publisher_summary_is_grouped_and_sorted():
     summary = SearchAggregator.publisher_summary([
         {"url": "https://b.example/one", "source_type": "reference"},

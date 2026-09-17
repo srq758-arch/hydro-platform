@@ -15,6 +15,21 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 class SearchAggregator:
     """对候选执行保守规范化、去重和发布方元数据补充。"""
 
+    _SOURCE_TYPE_PRIORITY = {
+        "official": 3,
+        "authority": 2,
+        "reference": 1,
+        "unknown": 0,
+    }
+    _DISCOVERY_METHOD_PRIORITY = {
+        "sse_official_disclosure": 4,
+        "deepseek_planned_web_search": 3,
+        "deepseek_responses_web_search": 3,
+        "official_site_explorer": 2,
+        "gem_wiki_external_link": 2,
+        "program_search_result": 1,
+    }
+
     _TRACKING_QUERY_KEYS = frozenset({
         "fbclid", "gclid", "mc_cid", "mc_eid", "ref", "referrer",
         "utm_campaign", "utm_content", "utm_medium", "utm_source", "utm_term",
@@ -67,6 +82,33 @@ class SearchAggregator:
         return parsed.netloc.lower().removeprefix("www.")
 
     @classmethod
+    def _quality_key(cls, candidate: dict[str, Any]) -> tuple[int, float, int, int, int]:
+        """Return a conservative quality key for duplicate URL candidates.
+
+        Search channels often describe the same URL differently: the raw program
+        result is intentionally ``reference`` while DeepSeek may classify that
+        exact result as ``official``/``authority`` and provide a reason.  Keeping
+        the first row silently discarded that enrichment.  Explicit numeric
+        scores win first; otherwise source tier and discovery method decide.
+        """
+        score = None
+        for field in ("combined_score", "priority_score", "source_reliability_score", "estimated_reliability"):
+            value = candidate.get(field)
+            try:
+                if value is not None:
+                    score = max(0.0, min(1.0, float(value)))
+                    break
+            except (TypeError, ValueError):
+                continue
+        return (
+            1 if score is not None else 0,
+            score if score is not None else 0.0,
+            cls._SOURCE_TYPE_PRIORITY.get(str(candidate.get("source_type") or "unknown").lower(), 0),
+            cls._DISCOVERY_METHOD_PRIORITY.get(str(candidate.get("discovery_method") or ""), 0),
+            1 if str(candidate.get("match_reason") or "").strip() else 0,
+        )
+
+    @classmethod
     def merge(
         cls,
         candidates: Iterable[dict[str, Any]],
@@ -117,6 +159,21 @@ class SearchAggregator:
                 existing_metadata["alias_urls"] = existing_aliases[:20]
             if not existing_metadata.get("publisher_domain"):
                 existing_metadata["publisher_domain"] = metadata.get("publisher_domain")
+            # 同一 URL 的后续候选可能来自 DeepSeek 对程序搜索结果的审核。
+            # 不能因“第一条先到”而丢掉更高来源等级、评分或判定理由；但仍
+            # 保留首个原始 URL，保证用户看到的审计入口稳定。
+            winner = candidate if cls._quality_key(candidate) > cls._quality_key(existing) else existing
+            if winner is not existing:
+                original_url = existing.get("url")
+                original_metadata = existing_metadata
+                for key, value in winner.items():
+                    if key in {"url", "metadata"} or value in (None, ""):
+                        continue
+                    existing[key] = value
+                if original_url:
+                    existing["url"] = original_url
+                existing["canonical_url"] = canonical
+                existing_metadata = {**original_metadata, **dict(winner.get("metadata") or {})}
             existing["metadata"] = existing_metadata
         return merged
 
