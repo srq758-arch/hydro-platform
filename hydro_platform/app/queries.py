@@ -907,10 +907,20 @@ class ReadQueries:
             ).fetchone()["n"]
         )
 
+        # v16 为 tasks 增加了 period_type。读取层仍兼容迁移前的离线库，
+        # 让旧数据库中的任务按历史默认口径（自然年）展示，而不是整页失败。
+        task_columns = {
+            row[1] for row in self.conn.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        period_type_select = (
+            "t.period_type" if "period_type" in task_columns
+            else "'calendar_year' AS period_type"
+        )
+
         rows = self.conn.execute(
             f"""
             SELECT t.task_id, t.entity_id, t.entity_type, t.task_type,
-                   t.target_period, t.status, t.priority_tier,
+                   t.target_period, {period_type_select}, t.status, t.priority_tier,
                    t.failure_stage, t.last_error, t.source_type,
                    t.user_specified_source, t.attempts, t.max_attempts, t.created_at,
                    COALESCE(s.canonical_name, p.canonical_name) AS entity_name
