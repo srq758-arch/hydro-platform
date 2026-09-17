@@ -13,9 +13,11 @@ from pathlib import Path
 import sqlite3
 
 from ...common.logging_setup import get_logger
-from ...common.enums import TaskStatus
+from ...common.enums import FailureStage, TaskStatus
 from ...database.connection import connect
 from ...database.repositories import TaskRepository
+from ...tasking.manager import TaskManager, TaskNotFound
+from ...tasking.state_machine import IllegalTransition
 from ...intelligence.web_search import SearchRuntime
 
 logger = get_logger(__name__)
@@ -156,6 +158,7 @@ class TaskScheduler:
         conn = connect(Path(self.db_path))
         try:
             task_repo = TaskRepository(conn)
+            task_manager = TaskManager(conn)
 
             # 查询待执行任务（按优先级和创建时间）
             cursor = conn.execute("""
@@ -178,14 +181,36 @@ class TaskScheduler:
             for task_row in pending_tasks:
                 task_id = task_row["task_id"]
 
+                # 必须在创建 worker 前原子领取。仅靠 active_workers 只能防住
+                # 同一调度器的重复扫描，防不住双启动/多进程调度器竞争。
+                try:
+                    task_manager.claim(task_id)
+                except (TaskNotFound, IllegalTransition):
+                    # 另一 worker 已经领取或任务被用户取消，跳过本轮。
+                    logger.info("任务 %s 已被其他执行者领取，跳过", task_id)
+                    continue
+
                 # 创建 Worker 线程并启动
-                worker_thread = threading.Thread(
-                    target=self._execute_task_wrapper,
-                    args=(task_id,),
-                    daemon=True,
-                    name=f"Worker-{task_id[:8]}"
-                )
-                worker_thread.start()
+                try:
+                    worker_thread = threading.Thread(
+                        target=self._execute_task_wrapper,
+                        args=(task_id,),
+                        daemon=True,
+                        name=f"Worker-{task_id[:8]}"
+                    )
+                    worker_thread.start()
+                except Exception as exc:
+                    # 领取成功但线程创建失败时不能留下 running 孤儿。
+                    try:
+                        task_manager.mark_failed(
+                            task_id,
+                            failure_stage=FailureStage.UNKNOWN,
+                            last_error=f"调度器创建 worker 失败: {exc}",
+                        )
+                    except Exception:
+                        logger.exception("回写 worker 创建失败状态时出错: %s", task_id)
+                    logger.error("创建任务 worker 失败: %s", task_id, exc_info=True)
+                    continue
 
                 # 记录到活跃 Worker 池
                 with self.worker_lock:
@@ -201,6 +226,8 @@ class TaskScheduler:
         try:
             logger.info(f"开始执行任务: {task_id}")
             result = self.task_executor(task_id)
+            if isinstance(result, dict) and result.get("status") == "failed":
+                self._mark_unfinished_task_failed(task_id, result.get("error"))
             logger.info(f"任务完成: {task_id}")
 
             # 调用完成回调
@@ -212,6 +239,7 @@ class TaskScheduler:
 
         except Exception as e:
             logger.error(f"任务失败: {task_id} - {e}", exc_info=True)
+            self._mark_unfinished_task_failed(task_id, str(e))
 
             # 调用错误回调
             if self.on_task_error:
@@ -219,6 +247,28 @@ class TaskScheduler:
                     self.on_task_error(task_id, {"error": str(e), "error_type": type(e).__name__})
                 except Exception as callback_error:
                     logger.error(f"任务错误回调异常: {callback_error}", exc_info=True)
+
+    def _mark_unfinished_task_failed(self, task_id: str, error: str | None) -> None:
+        """执行器未能自行落库时，避免已领取任务永久停在 running。"""
+        conn = connect(Path(self.db_path))
+        try:
+            row = conn.execute(
+                "SELECT status FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if row is not None and row["status"] == TaskStatus.RUNNING.value:
+                TaskManager(conn).mark_failed(
+                    task_id,
+                    failure_stage=FailureStage.UNKNOWN,
+                    last_error=error or "调度器执行器未返回失败原因",
+                )
+                conn.commit()
+        except (TaskNotFound, IllegalTransition):
+            # 正式编排器可能已经把任务落到 failed/needs_review/success。
+            pass
+        except Exception:
+            logger.exception("回写任务失败状态异常: %s", task_id)
+        finally:
+            conn.close()
 
     def _cleanup_finished_workers(self):
         """清理已完成的 Worker"""

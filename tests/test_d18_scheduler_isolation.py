@@ -69,7 +69,11 @@ def test_scheduler_uses_independent_connection(tmp_path):
 
     try:
         scheduler.start()
-        time.sleep(2)  # 等待调度器扫描
+        # 主连接先持有写事务，验证调度器不会读取未提交任务；随后释放
+        # 锁，让原子 claim 在下一轮扫描中领取已提交任务。
+        time.sleep(0.2)
+        main_conn.rollback()
+        time.sleep(2)  # 等待调度器扫描并领取
 
         # 验证：调度器能读取已提交的任务
         assert "test_task_1" in executed_tasks, "调度器应能读取已提交的任务"
@@ -79,7 +83,6 @@ def test_scheduler_uses_independent_connection(tmp_path):
 
     finally:
         scheduler.stop()
-        main_conn.rollback()
         main_conn.close()
         conn.close()
 
@@ -216,6 +219,98 @@ def test_no_connection_leak_in_scheduler(tmp_path):
 
     finally:
         scheduler.stop()
+
+
+def test_two_schedulers_atomically_claim_one_task(tmp_path):
+    """双启动调度器竞争同一 pending 任务时只能执行一次。"""
+    db_path = tmp_path / "race.db"
+    conn = connect(db_path)
+    schema_path = Path(__file__).parent.parent / "hydro_platform" / "database" / "schema.sql"
+    conn.executescript(schema_path.read_text(encoding="utf-8"))
+    TaskRepository(conn).upsert_many([
+        Task(
+            task_id="race_task",
+            entity_id="race_entity",
+            entity_type="station",
+            task_type="station_generation",
+            target_period="2024",
+            status=TaskStatus.PENDING,
+            created_at=now_iso(),
+            updated_at=now_iso(),
+        )
+    ])
+    conn.commit()
+    conn.close()
+
+    executed = []
+    executed_lock = threading.Lock()
+
+    def executor(task_id):
+        with executed_lock:
+            executed.append(task_id)
+        time.sleep(0.3)
+        return {"status": "success"}
+
+    schedulers = [
+        TaskScheduler(str(db_path), executor, max_workers=1, scan_interval=0.1),
+        TaskScheduler(str(db_path), executor, max_workers=1, scan_interval=0.1),
+    ]
+    try:
+        for scheduler in schedulers:
+            scheduler.start()
+        time.sleep(1)
+    finally:
+        for scheduler in schedulers:
+            scheduler.stop()
+
+    assert executed == ["race_task"]
+    conn = connect(db_path)
+    try:
+        assert conn.execute("SELECT status FROM tasks WHERE task_id='race_task'").fetchone()[0] == "running"
+    finally:
+        conn.close()
+
+
+def test_scheduler_marks_executor_exception_as_failed(tmp_path):
+    """执行器异常不能让已领取任务永久停在 running。"""
+    db_path = tmp_path / "executor-error.db"
+    conn = connect(db_path)
+    schema_path = Path(__file__).parent.parent / "hydro_platform" / "database" / "schema.sql"
+    conn.executescript(schema_path.read_text(encoding="utf-8"))
+    TaskRepository(conn).upsert_many([
+        Task(
+            task_id="executor-error-task",
+            entity_id="error-entity",
+            entity_type="station",
+            task_type="station_generation",
+            target_period="2024",
+            status=TaskStatus.PENDING,
+            created_at=now_iso(),
+            updated_at=now_iso(),
+        )
+    ])
+    conn.commit()
+    conn.close()
+
+    def executor(_task_id):
+        raise RuntimeError("executor boom")
+
+    scheduler = TaskScheduler(str(db_path), executor, max_workers=1, scan_interval=0.1)
+    try:
+        scheduler.start()
+        time.sleep(0.5)
+    finally:
+        scheduler.stop()
+
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT status, failure_stage, last_error, attempts FROM tasks WHERE task_id=?",
+            ("executor-error-task",),
+        ).fetchone()
+        assert tuple(row) == ("failed", "UNKNOWN", "executor boom", 1)
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

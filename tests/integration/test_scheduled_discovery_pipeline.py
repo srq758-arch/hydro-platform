@@ -26,10 +26,11 @@ def test_scheduled_task_builds_automatic_discovery_context(tmp_path, monkeypatch
 
     observed = {}
 
-    def fake_run(ctx, task):
+    def fake_run(ctx, task, **kwargs):
         observed["task_id"] = task.task_id
         observed["resolver"] = ctx.discovery_resolver
         observed["controlled_refs"] = ctx.url_resolver.resolve(task)
+        observed["preclaimed"] = kwargs.get("preclaimed")
         return PipelineResult(task_id=task.task_id, final_status=TaskStatus.SUCCESS, reached_stage="done")
 
     with patch("hydro_platform.app.api.Api._build_acquisition_router") as build_router, \
@@ -37,6 +38,7 @@ def test_scheduled_task_builds_automatic_discovery_context(tmp_path, monkeypatch
         result = api.execute_scheduled_task("scheduled_task")
 
     assert result["status"] == "success"
+    assert observed["preclaimed"] is True
     assert result["task_id"] == "scheduled_task"
     assert observed["task_id"] == "scheduled_task"
     assert isinstance(observed["resolver"], TaskSourceDiscoveryAdapter)

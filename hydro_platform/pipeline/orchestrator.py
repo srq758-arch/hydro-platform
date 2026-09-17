@@ -136,7 +136,12 @@ def _parsed_evidence_text(parsed) -> str:
     return "\n".join(part for part in parts if part)
 
 
-def run_task(ctx: PipelineContext, task) -> PipelineResult:
+def run_task(
+    ctx: PipelineContext,
+    task,
+    *,
+    preclaimed: bool = False,
+) -> PipelineResult:
     """把一个任务跑到复核闸门。返回 PipelineResult，全过程更新 tasks 状态。
 
     P0-4修复：所有执行都写入 task_runs 审计。
@@ -168,7 +173,15 @@ def run_task(ctx: PipelineContext, task) -> PipelineResult:
         # 失败任务重跑：先回排到 pending（受 max_attempts 约束），再走正常领取
         tm.requeue(task.task_id)
 
-    tm.claim(task.task_id)
+    if preclaimed:
+        # TaskScheduler 已通过同一状态机原子领取；再次 claim 会把正常的
+        # running 任务误判为竞争失败。仅允许已领取状态进入编排。
+        if current is not TaskStatus.RUNNING:
+            raise RuntimeError(
+                f"调度器预领取任务状态异常: {task.task_id}={current.value}"
+            )
+    else:
+        tm.claim(task.task_id)
 
     # —— P0-4: 创建 task_run 审计记录 ——
     attempt = (row["attempts"] if row else 0) + 1

@@ -2164,7 +2164,7 @@ class Api:
             )
 
             # 4. 执行Pipeline
-            result = run_task(ctx, task)
+            result = run_task(ctx, task, preclaimed=True)
             return {
                 "status": "success" if result.succeeded else ("needs_review" if result.needs_review else "failed"),
                 "task_id": task_id,
