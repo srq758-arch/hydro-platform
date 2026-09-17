@@ -37,6 +37,14 @@ def test_review_actions_quote_string_review_ids():
     assert "const id = cb.dataset.reviewId;" in source
 
 
+def test_review_actions_do_not_treat_structured_api_failures_as_success():
+    source = (ROOT / "hydro_platform" / "app" / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "function ensureReviewActionSuccess(result)" in source
+    assert source.count("ensureReviewActionSuccess(result);") >= 6
+    assert "result?.message || '复核操作失败'" in source
+
+
 def test_guide_route_and_first_use_onboarding_are_available():
     source = (ROOT / "hydro_platform" / "app" / "web" / "app.js").read_text(encoding="utf-8")
 

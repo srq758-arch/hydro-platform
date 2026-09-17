@@ -3001,7 +3001,8 @@ async function batchApprove() {
   let success = 0, failed = 0;
   for (const id of ids) {
     try {
-      await api().approve_record(id);
+      const result = await api().approve_record(id);
+      ensureReviewActionSuccess(result);
       success++;
     } catch (e) {
       failed++;
@@ -3020,7 +3021,8 @@ async function batchReject() {
   let success = 0, failed = 0;
   for (const id of ids) {
     try {
-      await api().reject_record(id, reason || '批量拒绝');
+      const result = await api().reject_record(id, reason || '批量拒绝');
+      ensureReviewActionSuccess(result);
       success++;
     } catch (e) {
       failed++;
@@ -3232,7 +3234,8 @@ function loadReviewNotes(recordId) {
 async function approveRecordFromModal(recordId) {
   if (!confirm('确认通过复核？该记录将可用于 Top 100 等榜单。')) return;
   try {
-    await api().approve_record(recordId);
+    const result = await api().approve_record(recordId);
+    ensureReviewActionSuccess(result);
     closeModal();
     renderReview();
     alert('已通过复核');
@@ -3245,7 +3248,8 @@ async function rejectRecordFromModal(recordId) {
   const reason = prompt('拒绝原因（可选）：');
   if (reason === null) return;
   try {
-    await api().reject_record(recordId, reason || '无效数据');
+    const result = await api().reject_record(recordId, reason || '无效数据');
+    ensureReviewActionSuccess(result);
     closeModal();
     renderReview();
     alert('已拒绝');
@@ -3257,7 +3261,8 @@ async function rejectRecordFromModal(recordId) {
 async function approveRecord(recordId) {
   if (!confirm('确认通过复核？该记录将可用于 Top 100 等榜单。')) return;
   try {
-    await api().approve_record(recordId);
+    const result = await api().approve_record(recordId);
+    ensureReviewActionSuccess(result);
     alert('已通过复核');
     navigate('review');
   } catch (e) {
@@ -3269,12 +3274,20 @@ async function rejectRecord(recordId) {
   const reason = prompt('拒绝原因（可选）：');
   if (reason === null) return;
   try {
-    await api().reject_record(recordId, reason || '无效数据');
+    const result = await api().reject_record(recordId, reason || '无效数据');
+    ensureReviewActionSuccess(result);
     alert('已拒绝');
     navigate('review');
   } catch (e) {
     alert('操作失败：' + e);
   }
+}
+
+function ensureReviewActionSuccess(result) {
+  if (!result || result.status !== 'success') {
+    throw new Error(result?.message || '复核操作失败');
+  }
+  return result;
 }
 
 // ---------- 全局搜索 ----------
