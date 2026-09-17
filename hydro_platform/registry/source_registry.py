@@ -113,8 +113,11 @@ class SourceRegistry:
             -- 过滤掉近期频繁失败的来源
             AND (
                 last_failure IS NULL
-                OR last_failure < datetime('now', '-7 days')
-                OR failure_count < 3
+                -- sources 使用 ISO-8601 的 ``T`` 分隔符；先交给
+                -- SQLite datetime() 解析，不能直接与带空格的 datetime
+                -- 字符串做字典序比较，否则旧失败记录永远不会恢复。
+                OR datetime(last_failure) < datetime('now', '-7 days')
+                OR COALESCE(failure_count, 0) < 3
             )
             {verification_clause}
             ORDER BY

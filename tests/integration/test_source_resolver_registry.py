@@ -210,3 +210,54 @@ def test_unverified_registry_source_does_not_mask_discovery(db):
 
     assert [ref.url for ref in refs] == ["https://search.test/verified-new"]
     assert refs[0].discovery_method == "program_search_result"
+
+
+def test_registry_source_recovers_after_old_failures_but_not_recent_failures(db):
+    registry = SourceRegistry(db)
+    source_id = registry.register_new_source(
+        entity_id="station-failure-recovery",
+        source_url="https://history.test/recoverable",
+        metadata={
+            "covered_metric": "generation",
+            "covered_year": 2024,
+            "source_type": "reference",
+            "estimated_reliability": 0.8,
+        },
+    )
+    registry.update_success(source_id, document_id="doc-recoverable")
+    db.execute(
+        """UPDATE sources
+           SET failure_count=3, last_failure='2020-01-01T00:00:00Z'
+           WHERE source_id=?""",
+        (source_id,),
+    )
+    db.commit()
+    task = SimpleNamespace(
+        task_id="task-failure-recovery",
+        entity_id="station-failure-recovery",
+        target_period="2024",
+        source_type="automatic",
+        user_specified_source=None,
+    )
+
+    # An old ISO timestamp must be eligible again after the seven-day window.
+    refs = resolve_sources_enhanced(db, task)
+    assert [ref.url for ref in refs] == ["https://history.test/recoverable"]
+
+    db.execute(
+        """UPDATE sources
+           SET last_failure=datetime('now'), failure_count=3
+           WHERE source_id=?""",
+        (source_id,),
+    )
+    db.commit()
+    refs = resolve_sources_enhanced(
+        db,
+        task,
+        discovery_resolver=_DiscoveryResolver([{
+            "url": "https://search.test/recovery-refresh",
+            "source_type": "official",
+            "discovery_method": "program_search_result",
+        }]),
+    )
+    assert [ref.url for ref in refs] == ["https://search.test/recovery-refresh"]
