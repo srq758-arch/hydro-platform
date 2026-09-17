@@ -261,3 +261,39 @@ def test_registry_source_recovers_after_old_failures_but_not_recent_failures(db)
         }]),
     )
     assert [ref.url for ref in refs] == ["https://search.test/recovery-refresh"]
+
+
+def test_stale_top_sources_do_not_hide_healthy_source_after_limit(db):
+    registry = SourceRegistry(db)
+    entity_id = "station-stale-top-five"
+    source_ids = []
+    for index in range(6):
+        source_id = registry.register_new_source(
+            entity_id=entity_id,
+            source_url=f"https://history.test/stale-{index}",
+            metadata={
+                "covered_metric": "generation",
+                "covered_year": 2024,
+                "source_type": "reference",
+                "estimated_reliability": 0.95 - index * 0.01,
+            },
+        )
+        registry.update_success(source_id, document_id=f"doc-stale-{index}")
+        source_ids.append(source_id)
+    db.execute(
+        """UPDATE sources SET last_success='2020-01-01T00:00:00Z'
+           WHERE source_id IN (?, ?, ?, ?, ?)""",
+        tuple(source_ids[:5]),
+    )
+    db.commit()
+    task = SimpleNamespace(
+        task_id="task-stale-top-five",
+        entity_id=entity_id,
+        target_period="2024",
+        source_type="automatic",
+        user_specified_source=None,
+    )
+
+    refs = resolve_sources_enhanced(db, task)
+
+    assert [ref.url for ref in refs] == ["https://history.test/stale-5"]

@@ -86,6 +86,7 @@ class SourceRegistry:
         verification_clause = """
             AND last_success IS NOT NULL
             AND COALESCE(success_count, 0) > 0
+            AND datetime(last_success) >= datetime('now', '-90 days')
         """ if verified_only else ""
         query = f"""
             SELECT
