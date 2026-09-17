@@ -36,3 +36,16 @@ def test_cli_task_mapping_defaults_fields_for_legacy_row():
     assert task.period_type.value == "calendar_year"
     assert task.source_type == "automatic"
     assert task.user_specified_source is None
+
+
+def test_cli_task_mapping_normalizes_legacy_generation_alias():
+    task = _task_from_row({
+        "task_id": "station::generation_annual::2024",
+        "entity_id": "station",
+        "entity_type": "station",
+        "task_type": "generation_annual",
+        "target_period": "2024",
+        "status": "pending",
+    })
+
+    assert task.task_type.value == "station_generation"

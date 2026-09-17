@@ -46,6 +46,18 @@ class Task(BaseModel):
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
 
+    @field_validator("task_type", mode="before")
+    @classmethod
+    def _normalize_legacy_task_type(cls, v: TaskType | str) -> TaskType | str:
+        """把 v1 早期别名归一化到统一任务类型。
+
+        旧 tasks 行可能保存 ``generation_annual``。如果不在领域模型入口
+        统一处理，CLI/API/调度器会出现不同的兼容行为，且旧任务无法重建。
+        """
+        if str(v) == "generation_annual":
+            return TaskType.STATION_GENERATION
+        return v
+
     @field_validator("max_attempts")
     @classmethod
     def _max_attempts_positive(cls, v: int) -> int:
