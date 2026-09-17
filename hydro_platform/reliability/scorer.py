@@ -7,6 +7,7 @@
 """
 
 from __future__ import annotations
+import re
 from typing import Dict, Any, Optional
 from urllib.parse import urlparse
 
@@ -39,6 +40,27 @@ class ReliabilityScorer:
             "chnenergy.com.cn": 0.85,  # 国家能源集团
         }
 
+    @staticmethod
+    def _is_domain_or_subdomain(hostname: str, trusted_domain: str) -> bool:
+        """Match a registered domain boundary, never an arbitrary substring."""
+        hostname = str(hostname or "").lower().rstrip(".")
+        trusted_domain = str(trusted_domain or "").lower().rstrip(".")
+        return bool(hostname and trusted_domain and (
+            hostname == trusted_domain or hostname.endswith(f".{trusted_domain}")
+        ))
+
+    @staticmethod
+    def _has_government_suffix(hostname: str) -> bool:
+        """Recognize ``.gov`` and common ``.gov.<cc>`` suffixes safely."""
+        hostname = str(hostname or "").lower().rstrip(".")
+        return hostname.endswith(".gov") or bool(re.search(r"\.gov\.[a-z]{2}$", hostname))
+
+    @staticmethod
+    def _has_organization_suffix(hostname: str) -> bool:
+        """Recognize ``.org`` and common ``.org.<cc>`` suffixes safely."""
+        hostname = str(hostname or "").lower().rstrip(".")
+        return hostname.endswith(".org") or bool(re.search(r"\.org\.[a-z]{2}$", hostname))
+
     def score_source_reliability(
         self,
         url: str,
@@ -67,11 +89,11 @@ class ReliabilityScorer:
 
         # 解析域名
         parsed = urlparse(url)
-        domain = parsed.netloc.lower()
+        domain = (parsed.hostname or "").lower().rstrip(".")
 
         # 优先检查可信域名列表
         for trusted_domain, trusted_score in self.trusted_domains.items():
-            if trusted_domain in domain:
+            if self._is_domain_or_subdomain(domain, trusted_domain):
                 logger.debug(f"可信域名匹配: {domain} -> {trusted_score}")
                 return trusted_score
 
@@ -86,10 +108,10 @@ class ReliabilityScorer:
             score = 0.50
 
         # 域名后缀加分
-        if ".gov" in domain:
+        if self._has_government_suffix(domain):
             score += 0.10
             logger.debug(f".gov 域名: +0.10")
-        elif ".org" in domain:
+        elif self._has_organization_suffix(domain):
             score += 0.05
             logger.debug(f".org 域名: +0.05")
 
