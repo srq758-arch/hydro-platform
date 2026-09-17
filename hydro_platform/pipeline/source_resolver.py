@@ -131,6 +131,9 @@ def resolve_sources_enhanced(
             metric="generation",
             year=int(task.target_period) if task.target_period and task.target_period.isdigit() else None,
             limit=5,
+            # 发现/下载但尚未完成事实校验的来源不得成为历史记忆，
+            # 否则一次失败任务会在后续任务中持续遮蔽新的搜索。
+            verified_only=True,
         )
     except sqlite3.OperationalError as exc:
         # Minimal/legacy callers may not have initialized the optional source

@@ -27,7 +27,9 @@ class SourceRegistry:
         self,
         entity_id: str,
         metric: str,
-        year: int = None
+        year: int = None,
+        *,
+        verified_only: bool = False,
     ) -> Optional[dict]:
         """查询历史最佳来源（优先于 Discovery）
 
@@ -48,7 +50,13 @@ class SourceRegistry:
         3. 优先返回覆盖目标年份的来源
         4. 按 source_reliability_score 降序
         """
-        sources = self.query_sources(entity_id=entity_id, metric=metric, year=year, limit=1)
+        sources = self.query_sources(
+            entity_id=entity_id,
+            metric=metric,
+            year=year,
+            limit=1,
+            verified_only=verified_only,
+        )
         return sources[0] if sources else None
 
     def query_sources(
@@ -57,8 +65,16 @@ class SourceRegistry:
         metric: str,
         year: int | None = None,
         limit: int = 5,
+        *,
+        verified_only: bool = False,
     ) -> List[dict]:
-        """按年份匹配和可靠性返回 Top-N 历史来源，而非只保留第一条。"""
+        """按年份匹配和可靠性返回 Top-N 历史来源。
+
+        ``verified_only`` 用于正式采集路径：只有至少一次完整采集/校验成功
+        的来源才允许作为历史来源复用。刚被发现或仅完成下载但尚未通过事实
+        校验的来源仍可通过默认查询返回，供管理和诊断页面查看，但不能反过来
+        遮蔽下一次任务的 Discovery。
+        """
         if limit < 1:
             return []
         logger.info(
@@ -67,7 +83,11 @@ class SourceRegistry:
         )
 
         # 查询条件
-        query = """
+        verification_clause = """
+            AND last_success IS NOT NULL
+            AND COALESCE(success_count, 0) > 0
+        """ if verified_only else ""
+        query = f"""
             SELECT
                 source_id,
                 COALESCE(source_url, url) AS source_url,
@@ -96,6 +116,7 @@ class SourceRegistry:
                 OR last_failure < datetime('now', '-7 days')
                 OR failure_count < 3
             )
+            {verification_clause}
             ORDER BY
                 -- 年份匹配优先
                 CASE WHEN covered_year = ? THEN 0 ELSE 1 END,

@@ -27,7 +27,7 @@ class _DiscoveryResolver:
 
 def test_historical_source_precedes_fallback(db):
     registry = SourceRegistry(db)
-    registry.register_new_source(
+    source_id = registry.register_new_source(
         entity_id="station_history",
         source_url="https://example.test/station-history/2024",
         metadata={
@@ -37,6 +37,7 @@ def test_historical_source_precedes_fallback(db):
             "estimated_reliability": 0.8,
         },
     )
+    registry.update_success(source_id, document_id="doc-history")
     task = SimpleNamespace(
         entity_id="station_history",
         target_period="2024",
@@ -132,16 +133,20 @@ def test_registry_returns_top_n_and_skips_expired_candidate(db):
     ]
     ids = []
     for url, score in values:
-        ids.append(registry.register_new_source(
+        source_id = registry.register_new_source(
             entity_id=entity_id,
             source_url=url,
             metadata={
                 "covered_metric": "generation",
                 "covered_year": 2024,
-                "source_type": "official",
+                "source_type": "reference",
                 "estimated_reliability": score,
             },
-        ))
+        )
+        # Only verified historical sources participate in task reuse.
+        if url != "https://history.test/high":
+            registry.update_success(source_id, document_id=f"doc-{url.rsplit('/', 1)[-1]}")
+        ids.append(source_id)
     # Highest-ranked source has not succeeded for over 90 days and must not
     # suppress the remaining valid historical candidates.
     db.execute(
@@ -164,3 +169,44 @@ def test_registry_returns_top_n_and_skips_expired_candidate(db):
         "https://history.test/low",
     ]
     assert all(ref.discovery_method == "source_registry" for ref in refs)
+
+
+def test_unverified_registry_source_does_not_mask_discovery(db):
+    registry = SourceRegistry(db)
+    source_id = registry.register_new_source(
+        entity_id="station-unverified",
+        source_url="https://history.test/not-yet-verified",
+        metadata={
+            "covered_metric": "generation",
+            "covered_year": 2024,
+            "source_type": "reference",
+            "estimated_reliability": 0.99,
+        },
+    )
+    # Deliberately leave success_count=0/last_success=NULL: this is the state
+    # after a candidate has been discovered or downloaded but not validated.
+    assert tuple(db.execute(
+        "SELECT success_count, last_success FROM sources WHERE source_id=?",
+        (source_id,),
+    ).fetchone()) == (0, None)
+    task = SimpleNamespace(
+        task_id="task-unverified",
+        entity_id="station-unverified",
+        target_period="2024",
+        source_type="automatic",
+        user_specified_source=None,
+    )
+    discovered = [{
+        "url": "https://search.test/verified-new",
+        "source_type": "official",
+        "discovery_method": "program_search_result",
+    }]
+
+    refs = resolve_sources_enhanced(
+        db,
+        task,
+        discovery_resolver=_DiscoveryResolver(discovered),
+    )
+
+    assert [ref.url for ref in refs] == ["https://search.test/verified-new"]
+    assert refs[0].discovery_method == "program_search_result"
