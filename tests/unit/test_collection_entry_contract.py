@@ -20,6 +20,11 @@ def test_run_collection_task_defaults_to_content_auto_detection():
     assert not hasattr(Api, "save_candidates_to_database")
 
 
+def test_legacy_content_kind_fallback_is_content_agnostic():
+    api = Api("test")
+    assert api._legacy_guess_content_kind("unknown-extension.bin") is ContentKind.ANY
+
+
 def test_desktop_start_task_rejects_legacy_context_free_request():
     result = HydroPlatformApp().start_task(
         {"type": "download_url", "url": "https://example.test/source"}

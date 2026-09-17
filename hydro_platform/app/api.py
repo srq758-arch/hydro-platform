@@ -1597,7 +1597,9 @@ class Api:
         """
         # 1. 采集
         router = AcquisitionRouter(http_client=HttpClient())
-        fetch_result = router.fetch(url, expected=ContentKind.PDF)
+        # 即使是兼容入口也不能把所有 URL 强制当成 PDF；统一采集入口会
+        # 根据响应头、文件签名和扩展名自动识别 HTML/PDF/Excel/CSV/JSON。
+        fetch_result = router.fetch(url, expected=ContentKind.ANY)
 
         if not fetch_result.success:
             raise wrap_acquisition_error(fetch_result, url)
@@ -2050,7 +2052,8 @@ class Api:
             ".htm": ContentKind.HTML,
             ".json": ContentKind.JSON,
         }
-        return KIND_MAP.get(ext, ContentKind.PDF)  # 默认 PDF
+        # 未知扩展名交给解析/采集层按内容签名判断，不再武断默认 PDF。
+        return KIND_MAP.get(ext, ContentKind.ANY)
 
     def _legacy_content_type_from_kind(self, kind: ContentKind) -> str:
         """从 ContentKind 推断 Content-Type。"""
