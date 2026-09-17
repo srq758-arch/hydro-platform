@@ -76,7 +76,7 @@ def resolve_sources_enhanced(
     fallback_resolver=None,
     discovery_resolver: object | None = None,
 ) -> List[CandidateSource]:
-    """增强的来源解析：SourceRegistry → Discovery → Fallback
+    """增强的来源解析：SourceRegistry → 受控注入来源 → Discovery
 
     Args:
         conn: 数据库连接
@@ -90,9 +90,9 @@ def resolve_sources_enhanced(
     D01修复：如果任务是用户手动指定来源(source_type='manual')，直接返回用户指定的来源，跳过自动搜索
     1. 查询 SourceRegistry 历史来源
     2. 如果找到且预检通过 → 返回
-    3. 如果没有历史来源 → 触发 Discovery
-    4. Discovery 返回排序候选 → 返回 Top 1
-    5. 如果 Discovery 也失败 → 尝试 fallback_resolver
+    3. 如果没有历史来源 → 尝试受控 fallback_resolver
+    4. 注入来源为空或失败 → 触发统一 Discovery
+    5. Discovery 返回排序候选 → 返回有界 Top-N
     """
     logger.info(f"开始解析数据源: entity_id={task.entity_id}, period={task.target_period}")
 
@@ -111,22 +111,6 @@ def resolve_sources_enhanced(
             title=label,
             publisher="Intelligent task" if task.source_type == 'intelligent' else "Manual",
         )]
-
-    # PipelineContext 的注入 resolver 是离线测试和受控批处理的明确来源。
-    # 它不是全网 Discovery 的回退结果，因此必须先于自动 Discovery 使用，
-    # 否则测试或受控任务会意外触发网络请求并被不相关候选覆盖。
-    if fallback_resolver:
-        try:
-            refs = fallback_resolver.resolve(task)
-            if refs:
-                logger.info("使用注入的受控来源：%d 个", len(refs))
-                return normalize_candidate_sources(
-                    refs,
-                    task_id=source_task_id(task),
-                    discovery_method="injected_resolver",
-                )
-        except Exception as e:
-            logger.error(f"注入来源解析失败: {e}", exc_info=True)
 
     # 准备任务字典（供 Discovery 使用）
     task_dict = {
@@ -171,6 +155,22 @@ def resolve_sources_enhanced(
                 )
                 for source in eligible
             ]
+
+    # PipelineContext 的注入 resolver 是离线测试和受控批处理的明确来源。
+    # 它不是全网 Discovery 的回退结果：只有没有可复用的历史来源时才使用，
+    # 避免一个受控 resolver 意外遮蔽已验证的历史来源。
+    if fallback_resolver:
+        try:
+            refs = fallback_resolver.resolve(task)
+            if refs:
+                logger.info("使用注入的受控来源：%d 个", len(refs))
+                return normalize_candidate_sources(
+                    refs,
+                    task_id=source_task_id(task),
+                    discovery_method="injected_resolver",
+                )
+        except Exception as e:
+            logger.error(f"注入来源解析失败: {e}", exc_info=True)
 
     # Step 3: 触发 Discovery
     logger.info("未找到有效历史来源，开始 Discovery")

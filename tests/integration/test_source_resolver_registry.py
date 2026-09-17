@@ -9,7 +9,11 @@ from hydro_platform.models.source_pipeline import CandidateSource
 
 
 class _MustNotRunResolver:
+    def __init__(self):
+        self.called = False
+
     def resolve(self, task):  # pragma: no cover - 进入此处即说明优先级倒置
+        self.called = True
         raise AssertionError("已有有效历史来源时不应调用受控 fallback")
 
 
@@ -40,13 +44,15 @@ def test_historical_source_precedes_fallback(db):
         user_specified_source=None,
     )
 
-    refs = resolve_sources_enhanced(db, task, fallback_resolver=_MustNotRunResolver())
+    fallback = _MustNotRunResolver()
+    refs = resolve_sources_enhanced(db, task, fallback_resolver=fallback)
 
     assert [ref.url for ref in refs] == ["https://example.test/station-history/2024"]
     assert isinstance(refs[0], CandidateSource)
     assert refs[0].discovery_method == "source_registry"
     assert refs[0].title.startswith("历史来源")
     assert refs[0].expected is ContentKind.ANY
+    assert fallback.called is False
 
 
 def test_confirmed_intelligent_source_allows_router_to_detect_document_type(db):
