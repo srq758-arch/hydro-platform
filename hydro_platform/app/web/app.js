@@ -1392,6 +1392,18 @@ function addToHistory(record) {
   saveProcessHistory(history);
 }
 
+// 后台任务可能在用户切换到其他页面后才完成；保留启动时的来源上下文，
+// 终态事件到达时不依赖当前页面上的输入框。
+const activeTaskContexts = new Map();
+
+function rememberTaskContext(taskId, context) {
+  if (taskId) activeTaskContexts.set(taskId, { ...context });
+}
+
+function forgetTaskContext(taskId) {
+  if (taskId) activeTaskContexts.delete(taskId);
+}
+
 function clearProcessHistory() {
   if (confirm('确定清空所有处理历史记录吗？')) {
     localStorage.removeItem('hydro_process_history');
@@ -2243,6 +2255,13 @@ async function startDownloadTask() {
       return;
     }
 
+    if (result.status === 'started') {
+      rememberTaskContext(result.task_id, {
+        url,
+        file_path: null,
+        source_id: source,
+      });
+    }
     el('task-log').innerHTML = formatPipelineResult(result);
 
     if (result.status === 'needs_review') {
@@ -2337,6 +2356,13 @@ async function startSingleFileTask() {
       return;
     }
 
+    if (result.status === 'started') {
+      rememberTaskContext(result.task_id, {
+        url: null,
+        file_path: filePath,
+        source_id: source,
+      });
+    }
     el('task-log').innerHTML = formatPipelineResult(result);
 
     if (result.status === 'needs_review') {
@@ -2464,8 +2490,11 @@ function formatExtractedData(records) {
 }
 
 function showTaskError(stage, code, message) {
-  el('task-error').style.display = '';
-  el('error-content').innerHTML = `
+  const errorPanel = el('task-error');
+  const errorContent = el('error-content');
+  if (!errorPanel || !errorContent) return;
+  errorPanel.style.display = '';
+  errorContent.innerHTML = `
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
       <span class="badge-status st-missing">${esc(stage)}</span>
       <strong style="color:var(--red)">${esc(code)}</strong>
@@ -2475,28 +2504,33 @@ function showTaskError(stage, code, message) {
 
 // 接收后台事件
 window.onTaskEvent = function(event) {
+  const context = activeTaskContexts.get(event?.task_id) || {};
   const log = el('task-log');
-  if (!log) return;
 
   if (event.type === 'progress') {
+    if (!log) return;
     log.innerHTML += '<br>' + esc(event.message);
   } else if (event.type === 'state_change') {
-    const stage = (event.data.stage || '').toUpperCase();
+    if (!log) return;
+    const stage = (event.data?.stage || '').toUpperCase();
     log.innerHTML += '<br><span class="badge-status st-neutral" style="margin-right:8px">' + stage + '</span>' + esc(event.message);
   } else if (event.type === 'complete') {
-    const result = event.data.result;
+    const result = event.data?.result || {};
+    const url = context.url || el('input-url')?.value;
+    const filePath = context.file_path || null;
+    const sourceId = context.source_id || el('input-source-url')?.value;
     if (result.status === 'success') {
-      log.innerHTML += '<br><strong style="color:var(--green)">✓ 任务完成</strong>';
-      displayTaskResult(result);
+      if (log) log.innerHTML += '<br><strong style="color:var(--green)">✓ 任务完成</strong>';
+      if (el('task-result')) displayTaskResult(result);
 
       // 添加到历史记录
       addToHistory({
         success: true,
-        url: el('input-url')?.value,
-        file_path: null,
-        source_id: el('input-source-url')?.value,
+        url,
+        file_path: filePath,
+        source_id: sourceId,
         saved_count: result.save_result?.saved || 0,
-        name: result.name || (el('input-url')?.value?.split('/').pop())
+        name: result.name || url?.split('/').pop() || filePath?.split(/[/\\]/).pop()
       });
 
       // 刷新历史记录显示（延迟 1 秒让用户看到任务完成提示）
@@ -2505,24 +2539,28 @@ window.onTaskEvent = function(event) {
       }, 1000);
     } else if (result.status === 'needs_review') {
       const reviewCount = Array.isArray(result.review_ids) ? result.review_ids.length : 0;
-      log.innerHTML += '<br><strong style="color:var(--orange)">⚠ 任务完成，待复核</strong>';
-      el('task-result').style.display = '';
-      el('result-content').innerHTML = `
-        <div style="padding:12px;background:var(--warning-bg);border-radius:var(--radius-sm);margin-bottom:12px">
-          <strong>⚠️ 需要人工复核</strong>
-          <p style="margin:8px 0 0 0;font-size:13px">
-            Pipeline 已完成，${reviewCount} 条记录等待复核；
-            <a href="#" onclick="navigate('review');return false" style="color:var(--primary)">前往复核中心</a>
-          </p>
-        </div>`;
+      if (log) log.innerHTML += '<br><strong style="color:var(--orange)">⚠ 任务完成，待复核</strong>';
+      const taskResult = el('task-result');
+      const resultContent = el('result-content');
+      if (taskResult && resultContent) {
+        taskResult.style.display = '';
+        resultContent.innerHTML = `
+          <div style="padding:12px;background:var(--warning-bg);border-radius:var(--radius-sm);margin-bottom:12px">
+            <strong>⚠️ 需要人工复核</strong>
+            <p style="margin:8px 0 0 0;font-size:13px">
+              Pipeline 已完成，${reviewCount} 条记录等待复核；
+              <a href="#" onclick="navigate('review');return false" style="color:var(--primary)">前往复核中心</a>
+            </p>
+          </div>`;
+      }
 
       addToHistory({
         success: true,
-        url: el('input-url')?.value,
-        file_path: null,
-        source_id: el('input-source-url')?.value,
+        url,
+        file_path: filePath,
+        source_id: sourceId,
         saved_count: result.candidates_promoted || 0,
-        name: result.name || (el('input-url')?.value?.split('/').pop())
+        name: result.name || url?.split('/').pop() || filePath?.split(/[/\\]/).pop()
       });
 
       setTimeout(() => {
@@ -2537,13 +2575,13 @@ window.onTaskEvent = function(event) {
       // 添加到历史记录
       addToHistory({
         success: false,
-        url: el('input-url')?.value,
-        file_path: null,
-        source_id: el('input-source-url')?.value,
+        url,
+        file_path: filePath,
+        source_id: sourceId,
         error_stage: failureStage,
         error_code: failureCode,
         error_message: failureMessage,
-        name: result.name || (el('input-url')?.value?.split('/').pop())
+        name: result.name || url?.split('/').pop() || filePath?.split(/[/\\]/).pop()
       });
 
       // 刷新历史记录显示（延迟 1 秒让用户看到错误提示）
@@ -2551,25 +2589,31 @@ window.onTaskEvent = function(event) {
         renderAddDataHistoryOnly();
       }, 1000);
     }
+    forgetTaskContext(event.task_id);
   } else if (event.type === 'error') {
-    showTaskError('UNKNOWN', event.data.error_type || 'ERROR', event.message);
+    const errorType = event.data?.error_type || 'ERROR';
+    const url = context.url || el('input-url')?.value;
+    const filePath = context.file_path || null;
+    const sourceId = context.source_id || el('input-source-url')?.value;
+    showTaskError('UNKNOWN', errorType, event.message || event.data?.error || '任务失败');
 
     // 添加到历史记录
     addToHistory({
       success: false,
-      url: el('input-url')?.value,
-      file_path: null,
-      source_id: el('input-source-url')?.value,
+      url,
+      file_path: filePath,
+      source_id: sourceId,
       error_stage: 'UNKNOWN',
-      error_code: event.data.error_type || 'ERROR',
-      error_message: event.message,
-      name: (el('input-url')?.value?.split('/').pop()) || 'unknown'
+      error_code: errorType,
+      error_message: event.message || event.data?.error || '任务失败',
+      name: url?.split('/').pop() || filePath?.split(/[/\\]/).pop() || 'unknown'
     });
 
     // 刷新历史记录显示
     setTimeout(() => {
       renderAddDataHistoryOnly();
     }, 1000);
+    forgetTaskContext(event.task_id);
   }
 };
 

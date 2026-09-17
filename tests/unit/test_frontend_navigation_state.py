@@ -76,6 +76,17 @@ def test_async_task_history_waits_for_terminal_event_and_renders_review_gate():
     assert "navigate('review');return false" in source
 
 
+def test_async_task_events_keep_source_context_when_user_navigates_away():
+    source = (ROOT / "hydro_platform" / "app" / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "const activeTaskContexts = new Map();" in source
+    assert "rememberTaskContext(result.task_id" in source
+    assert "const context = activeTaskContexts.get(event?.task_id) || {};" in source
+    assert "if (!log) return;" in source  # only progress/state UI updates may be skipped
+    assert "forgetTaskContext(event.task_id);" in source
+    assert "event.data?.error_type" in source
+
+
 def test_guide_route_and_first_use_onboarding_are_available():
     source = (ROOT / "hydro_platform" / "app" / "web" / "app.js").read_text(encoding="utf-8")
 
