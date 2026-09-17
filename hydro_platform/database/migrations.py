@@ -26,6 +26,7 @@ D15修复：
 - v14: 原子任务 worker 租约与心跳字段（014_task_lease_contract.sql）
 - v15: 已验证发布方画像及成功来源观察（015_publisher_profile.sql）
 - v16: 任务与智能规划显式统计周期口径（016_period_type_contract.sql）
+- v17: 任务周期口径参与唯一键（017_period_type_unique_contract.sql）
 """
 
 from __future__ import annotations
@@ -60,6 +61,7 @@ MIGRATIONS = [
     (14, "014_task_lease_contract.sql", "添加任务 worker 租约与心跳字段", "verify_task_lease_contract_v14"),
     (15, "015_publisher_profile.sql", "添加已验证发布方画像", "verify_publisher_profile_v15"),
     (16, "016_period_type_contract.sql", "添加任务自然年/财政年度口径", "verify_period_type_contract_v16"),
+    (17, "017_period_type_unique_contract.sql", "修复自然年/财政年度任务唯一键", "verify_period_type_unique_contract_v17"),
 ]
 
 CURRENT_VERSION = max(v for v, _, _, _ in MIGRATIONS)
@@ -617,6 +619,34 @@ def verify_period_type_contract_v16(conn: sqlite3.Connection) -> tuple[bool, str
     return True, "v16 任务期间口径契约完整"
 
 
+def _unique_index_columns(conn: sqlite3.Connection, table: str) -> list[tuple[str, list[str]]]:
+    """返回表上所有唯一索引及其列，包含 SQLite 自动生成的约束索引。"""
+    result: list[tuple[str, list[str]]] = []
+    for row in conn.execute(f"PRAGMA index_list([{table}])").fetchall():
+        # index_list: seq, name, unique, origin, partial
+        if not row[2]:
+            continue
+        name = str(row[1])
+        columns = [str(info[2]) for info in conn.execute(f"PRAGMA index_info([{name}])").fetchall()]
+        result.append((name, columns))
+    return result
+
+
+def verify_period_type_unique_contract_v17(conn: sqlite3.Connection) -> tuple[bool, str]:
+    """验证任务幂等键同时包含目标年份和统计口径。"""
+    success, message = verify_period_type_contract_v16(conn)
+    if not success:
+        return False, message
+    expected = ["entity_id", "task_type", "target_period", "period_type"]
+    uniques = _unique_index_columns(conn, "tasks")
+    if expected not in [columns for _, columns in uniques]:
+        return False, "tasks 缺少包含 period_type 的任务唯一键"
+    legacy = ["entity_id", "task_type", "target_period"]
+    if legacy in [columns for _, columns in uniques]:
+        return False, "tasks 仍保留不含 period_type 的旧任务唯一键"
+    return True, "v17 任务周期口径唯一键契约完整"
+
+
 def _execute_v12_generation_domain_contract(conn: sqlite3.Connection, version: int) -> None:
     """逐列幂等升级，旧候选保持 NULL，禁止根据历史值猜测指标。"""
     conn.execute("SAVEPOINT migration_v12")
@@ -863,6 +893,112 @@ def _execute_v16_period_type_contract(conn: sqlite3.Connection, version: int) ->
         conn.execute("RELEASE SAVEPOINT migration_v16")
 
 
+_TASK_CONTRACT_COLUMNS = (
+    "task_id", "entity_id", "entity_type", "task_type", "target_period",
+    "period_type", "status", "priority_tier", "collection_priority",
+    "attempts", "max_attempts", "failure_stage", "last_error", "source_type",
+    "user_specified_source", "created_at", "updated_at", "worker_id",
+    "lease_expires_at", "heartbeat_at",
+)
+
+
+def _execute_v17_period_type_unique_contract(conn: sqlite3.Connection, version: int) -> None:
+    """重建 tasks 的唯一约束，使自然年和财政年度任务可以并存。
+
+    SQLite 不能直接修改表级 UNIQUE 约束。这里在关闭外键检查的短事务中
+    重建父表；``legacy_alter_table`` 保证已有子表的 REFERENCES tasks 不会
+    被改写成临时表名。索引和触发器定义会在重建后原样恢复。
+    """
+    already_valid, _ = verify_period_type_unique_contract_v17(conn)
+    if already_valid:
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (?, ?)",
+            (version, now_iso()),
+        )
+        return
+
+    conn.commit()
+    old_fk = int(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+    old_legacy = int(conn.execute("PRAGMA legacy_alter_table").fetchone()[0])
+    index_defs = [
+        (str(row[0]), str(row[1]))
+        for row in conn.execute(
+            "SELECT name, sql FROM sqlite_master "
+            "WHERE type='index' AND tbl_name='tasks' AND sql IS NOT NULL"
+        ).fetchall()
+    ]
+    trigger_defs = [
+        str(row[0])
+        for row in conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='trigger' AND tbl_name='tasks' AND sql IS NOT NULL"
+        ).fetchall()
+    ]
+    existing_columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+    }
+    missing = [column for column in _TASK_CONTRACT_COLUMNS if column not in existing_columns]
+    if missing:
+        raise RuntimeError(f"v17 无法重建 tasks：缺少列 {', '.join(missing)}")
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("PRAGMA legacy_alter_table=ON")
+    try:
+        conn.execute("BEGIN")
+        for name, _ in index_defs:
+            conn.execute(f"DROP INDEX [{name}]")
+        conn.execute("ALTER TABLE tasks RENAME TO tasks_legacy")
+        conn.execute("""
+            CREATE TABLE tasks_new (
+                task_id             TEXT PRIMARY KEY,
+                entity_id           TEXT NOT NULL,
+                entity_type         TEXT NOT NULL,
+                task_type           TEXT NOT NULL,
+                target_period       TEXT,
+                period_type         TEXT NOT NULL DEFAULT 'calendar_year',
+                status              TEXT NOT NULL DEFAULT 'pending',
+                priority_tier       TEXT,
+                collection_priority INTEGER,
+                attempts            INTEGER NOT NULL DEFAULT 0,
+                max_attempts        INTEGER NOT NULL DEFAULT 3,
+                failure_stage       TEXT,
+                last_error          TEXT,
+                source_type         TEXT DEFAULT 'automatic',
+                user_specified_source TEXT,
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL,
+                worker_id           TEXT,
+                lease_expires_at    TEXT,
+                heartbeat_at        TEXT,
+                UNIQUE (entity_id, task_type, target_period, period_type)
+            )
+        """)
+        columns = ", ".join(f"[{column}]" for column in _TASK_CONTRACT_COLUMNS)
+        conn.execute(
+            f"INSERT INTO tasks_new ({columns}) SELECT {columns} FROM tasks_legacy"
+        )
+        conn.execute("DROP TABLE tasks_legacy")
+        conn.execute("ALTER TABLE tasks_new RENAME TO tasks")
+        for _, sql in index_defs:
+            conn.execute(sql)
+        for sql in trigger_defs:
+            conn.execute(sql)
+        success, message = verify_period_type_unique_contract_v17(conn)
+        if not success:
+            raise RuntimeError(f"迁移 v17 验证失败: {message}")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (?, ?)",
+            (version, now_iso()),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute(f"PRAGMA legacy_alter_table={'ON' if old_legacy else 'OFF'}")
+        conn.execute(f"PRAGMA foreign_keys={'ON' if old_fk else 'OFF'}")
+
+
 def _execute_v8_trustworthy_views(conn: sqlite3.Connection, version: int) -> None:
     """重建两个出口视图，统一执行 Candidate→Evidence→Document 链路校验。"""
     conn.execute("SAVEPOINT migration_v8")
@@ -989,6 +1125,7 @@ VERIFY_FUNCTIONS = {
     'verify_task_lease_contract_v14': verify_task_lease_contract_v14,
     'verify_publisher_profile_v15': verify_publisher_profile_v15,
     'verify_period_type_contract_v16': verify_period_type_contract_v16,
+    'verify_period_type_unique_contract_v17': verify_period_type_unique_contract_v17,
 }
 
 
@@ -1027,6 +1164,10 @@ def _execute_migration(
     if version == 16:
         _execute_v16_period_type_contract(conn, version)
         logger.info("✓ 迁移 v16 完成：任务期间口径契约完整")
+        return
+    if version == 17:
+        _execute_v17_period_type_unique_contract(conn, version)
+        logger.info("✓ 迁移 v17 完成：任务周期口径唯一键契约完整")
         return
 
     if filename is None:
@@ -1096,7 +1237,10 @@ def migrate(conn: sqlite3.Connection, target_version: Optional[int] = None) -> i
     current = _applied_version(conn)
 
     if current >= target_version:
-        if target_version >= 16:
+        if target_version >= 17:
+            success, message = verify_period_type_unique_contract_v17(conn)
+            contract_name = "v17"
+        elif target_version >= 16:
             success, message = verify_period_type_contract_v16(conn)
             contract_name = "v16"
         elif target_version >= 15:

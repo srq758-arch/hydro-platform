@@ -106,7 +106,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     user_specified_source TEXT,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL,
-    UNIQUE (entity_id, task_type, target_period)
+    -- Natural-year and fiscal-year tasks for the same station/year are
+    -- distinct work items.  Keep the period type in the idempotency key.
+    UNIQUE (entity_id, task_type, target_period, period_type)
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_tier ON tasks(priority_tier);

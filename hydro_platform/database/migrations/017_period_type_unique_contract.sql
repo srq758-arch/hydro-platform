@@ -1,0 +1,8 @@
+-- v17 由 migrations.py 以可回滚的 tasks 表重建方式执行。
+--
+-- SQLite 不支持直接修改表级 UNIQUE 约束。迁移会保留历史任务数据、索引、
+-- 触发器和子表外键，并将任务幂等键从
+--   (entity_id, task_type, target_period)
+-- 调整为
+--   (entity_id, task_type, target_period, period_type)
+-- 从而允许同一电站同一年份分别创建自然年和财政年度任务。
