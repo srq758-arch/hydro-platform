@@ -1381,7 +1381,7 @@ class Api:
             {"task_id": str, "status": "pending"}
         """
         from hydro_platform.common.clock import now_iso
-        from hydro_platform.common.enums import PeriodType, TaskType
+        from hydro_platform.common.enums import EntityType, PeriodType, TaskType
         from hydro_platform.models.task import Task
 
         if period_type not in {PeriodType.CALENDAR_YEAR.value, PeriodType.FISCAL_YEAR.value}:
@@ -1389,8 +1389,31 @@ class Api:
 
         conn = self.get_db_connection()
         try:
-            # 转换为枚举类型
-            task_type_enum = TaskType.STATION_GENERATION if task_type == "generation_annual" else TaskType.STATION_GENERATION
+            # 兼容旧 UI 使用的 generation_annual，同时不再把未知/其他指标
+            # 静默写成 station_generation。静默降级会让任务 ID、采集策略和
+            # 最终事实指标彼此错位，且用户只能在很晚的阶段发现。
+            task_type_aliases = {
+                "generation_annual": TaskType.STATION_GENERATION,
+                "station_generation": TaskType.STATION_GENERATION,
+                "station_capacity": TaskType.STATION_CAPACITY,
+                "project_status": TaskType.PROJECT_STATUS,
+                "project_commissioning": TaskType.PROJECT_COMMISSIONING,
+                "user_query": TaskType.USER_QUERY,
+            }
+            task_type_enum = task_type_aliases.get(str(task_type))
+            if task_type_enum is None:
+                return {
+                    "success": False,
+                    "error": f"不支持的任务类型: {task_type}",
+                }
+            entity_type = (
+                EntityType.PROJECT.value
+                if task_type_enum in {
+                    TaskType.PROJECT_STATUS,
+                    TaskType.PROJECT_COMMISSIONING,
+                }
+                else EntityType.STATION.value
+            )
 
             # 使用 Task 模型的幂等 ID 生成方法
             task_id = Task.derive_id(entity_id, task_type_enum, target_period, period_type)
@@ -1417,7 +1440,7 @@ class Api:
                     target_period, period_type, status, source_type, user_specified_source,
                     created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (task_id, entity_id, "station", task_type_enum.value,
+                (task_id, entity_id, entity_type, task_type_enum.value,
                  target_period, period_type, "pending", source_type, user_specified_source, now, now)
             )
             conn.commit()

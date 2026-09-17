@@ -76,3 +76,28 @@ def test_cancel_test_tasks_only_cancels_nonterminal_test_prefix_tasks(monkeypatc
     assert statuses["test_done::station_generation::2024"] == "success"
     assert statuses["real_pending::station_generation::2024"] == "pending"
     conn.close()
+
+
+def test_create_task_preserves_requested_task_type_and_rejects_unknown(monkeypatch, tmp_path):
+    api = _api_with_tasks(monkeypatch, tmp_path)
+
+    capacity = api.create_task(
+        "station_capacity_target", "-", task_type="station_capacity"
+    )
+    assert capacity["success"] is True
+    assert capacity["task_id"] == "station_capacity_target::station_capacity::-"
+
+    project = api.create_task(
+        "project_target", "2026", task_type="project_status"
+    )
+    assert project["success"] is True
+    conn = api.get_db_connection()
+    row = conn.execute(
+        "SELECT entity_type, task_type FROM tasks WHERE task_id = ?",
+        (project["task_id"],),
+    ).fetchone()
+    conn.close()
+    assert tuple(row) == ("project", "project_status")
+
+    invalid = api.create_task("station_invalid", "2024", task_type="typo_metric")
+    assert invalid == {"success": False, "error": "不支持的任务类型: typo_metric"}
