@@ -15,8 +15,10 @@ from ..common.enums import EntityType, FailureStage, PeriodType, TaskStatus, Tas
 class Task(BaseModel):
     """采集任务。
 
-    task_id 由 (entity_id, task_type, target_period) 派生，保证同一目标只生成一个任务
-    （幂等，文档 23.1）。attempts 记录重试次数，failure_stage 记录最近失败分类。
+    task_id 由 (entity_id, task_type, target_period, period_type) 派生，保证同一
+    目标和统计口径只生成一个任务（幂等，文档 23.1）。自然年沿用历史 ID，
+    财政年度追加口径后缀以保持旧任务可寻址。attempts 记录重试次数，
+    failure_stage 记录最近失败分类。
     """
 
     model_config = ConfigDict(str_strip_whitespace=True)

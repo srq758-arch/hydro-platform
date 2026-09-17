@@ -4,8 +4,9 @@
   - 电站：每个目标年份一个 station_generation；容量补采一个 station_capacity（无周期）
   - 项目：一个 project_status + 一个 project_commissioning（均无周期）
 
-task_id 由 (entity_id, task_type, target_period) 派生，重复生成幂等——
-同一实体同一目标不会产生重复任务（文档 23.1）。
+task_id 由 (entity_id, task_type, target_period, period_type) 派生，重复生成幂等——
+同一实体、目标和统计口径不会产生重复任务（文档 23.1）。自然年保持历史 ID
+格式，财政年度使用带口径后缀的 ID。
 """
 
 from __future__ import annotations
