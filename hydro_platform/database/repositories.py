@@ -109,7 +109,7 @@ def _task_row(t: Task, columns: tuple[str, ...] = _TASK_COLUMNS) -> tuple:
 
 
 class TaskRepository:
-    """tasks 表读写。upsert 幂等键为 task_id（由三元组派生）。"""
+    """tasks 表读写。upsert 幂等键为 task_id（由目标与统计口径派生）。"""
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
