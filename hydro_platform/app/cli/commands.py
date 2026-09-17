@@ -141,9 +141,9 @@ def run_task(task_id: str, db: Optional[str], verbose: bool):
 
         # 创建Pipeline上下文所需的依赖
         from hydro_platform.acquisition.router import AcquisitionRouter
-        from hydro_platform.pipeline.source_resolver import resolve_sources_enhanced
 
-        # 简化的UrlResolver（使用source_resolver）
+        # CLI 不注入历史旧解析器；空 resolver 让统一编排器按同一套
+        # SourceRegistry → Discovery 规则处理自动任务。
         class SimpleUrlResolver:
             def resolve(self, task):
                 # 返回空列表，让pipeline使用默认的discovery流程
