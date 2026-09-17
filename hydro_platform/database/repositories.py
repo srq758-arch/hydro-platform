@@ -128,12 +128,21 @@ class TaskRepository:
                       "priority_tier", "collection_priority", "updated_at")
             if c in cols
         )
-        updates += (
-            ", source_type=CASE WHEN excluded.source_type='manual' "
-            "THEN excluded.source_type ELSE tasks.source_type END"
-            ", user_specified_source=CASE WHEN excluded.source_type='manual' "
-            "THEN excluded.user_specified_source ELSE tasks.user_specified_source END"
-        )
+        # 旧 v1 离线库可能没有来源追踪列。插入列已按 schema 过滤，
+        # 冲突更新也必须同步按列生成，否则重复 upsert 会引用不存在列。
+        if "source_type" in cols:
+            updates += (
+                ", source_type=CASE WHEN excluded.source_type='manual' "
+                "THEN excluded.source_type ELSE tasks.source_type END"
+            )
+        if "user_specified_source" in cols:
+            if "source_type" in cols:
+                updates += (
+                    ", user_specified_source=CASE WHEN excluded.source_type='manual' "
+                    "THEN excluded.user_specified_source ELSE tasks.user_specified_source END"
+                )
+            else:
+                updates += ", user_specified_source=excluded.user_specified_source"
         placeholders = ", ".join("?" for _ in cols)
         sql = (
             f"INSERT INTO tasks ({', '.join(cols)}) VALUES ({placeholders}) "

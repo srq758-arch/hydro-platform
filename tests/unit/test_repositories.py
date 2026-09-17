@@ -71,3 +71,50 @@ def test_update_status_bumps_attempt(db):
     row = repo.fetch_by_status(TaskStatus.FAILED.value)[0]
     assert row["attempts"] == 1
     assert row["failure_stage"] == "PARSE_FAILED"
+
+
+def test_task_upsert_supports_legacy_schema_without_source_columns():
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE tasks (
+            task_id TEXT PRIMARY KEY,
+            entity_id TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            task_type TEXT NOT NULL,
+            target_period TEXT,
+            status TEXT NOT NULL,
+            priority_tier TEXT,
+            collection_priority INTEGER,
+            attempts INTEGER DEFAULT 0,
+            max_attempts INTEGER DEFAULT 3,
+            failure_stage TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+    repo = TaskRepository(conn)
+    task = Task(
+        task_id="legacy::station_generation::2024",
+        entity_id="legacy",
+        entity_type=EntityType.STATION,
+        task_type=TaskType.STATION_GENERATION,
+        target_period="2024",
+        source_type="manual",
+        user_specified_source="https://example.test/report.html",
+    )
+
+    assert repo.upsert_many([task]) == 1
+    assert repo.upsert_many([task.model_copy(update={"updated_at": "2099-01-01T00:00:00Z"})]) == 1
+    row = conn.execute("SELECT task_id, task_type, updated_at FROM tasks").fetchone()
+    assert tuple(row) == (
+        "legacy::station_generation::2024",
+        "station_generation",
+        "2099-01-01T00:00:00Z",
+    )
+    conn.close()
