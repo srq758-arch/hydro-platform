@@ -2264,15 +2264,18 @@ async function startDownloadTask() {
       `;
     }
 
-    addToHistory({
-      timestamp: new Date().toISOString(),
-      url: url,
-      source_id: source,
-      success: result.status === 'success' || result.status === 'needs_review',
-      saved_count: result.saved_count,
-      error_stage: result.failure_stage,
-      error_message: result.error_message
-    });
+    // start_task 的正常返回态是 started；终态由后台 onTaskEvent 统一写入历史。
+    if (result.status !== 'started') {
+      addToHistory({
+        timestamp: new Date().toISOString(),
+        url: url,
+        source_id: source,
+        success: result.status === 'success' || result.status === 'needs_review',
+        saved_count: result.saved_count,
+        error_stage: result.failure_stage,
+        error_message: result.error_message
+      });
+    }
 
   } catch (e) {
     showTaskError('UNKNOWN', 'TASK_START_FAILED', '启动任务失败：' + e);
@@ -2355,15 +2358,18 @@ async function startSingleFileTask() {
       `;
     }
 
-    addToHistory({
-      timestamp: new Date().toISOString(),
-      file_path: filePath,
-      source_id: source,
-      success: result.status === 'success' || result.status === 'needs_review',
-      saved_count: result.saved_count,
-      error_stage: result.failure_stage,
-      error_message: result.error_message
-    });
+    // start_task 的正常返回态是 started；终态由后台 onTaskEvent 统一写入历史。
+    if (result.status !== 'started') {
+      addToHistory({
+        timestamp: new Date().toISOString(),
+        file_path: filePath,
+        source_id: source,
+        success: result.status === 'success' || result.status === 'needs_review',
+        saved_count: result.saved_count,
+        error_stage: result.failure_stage,
+        error_message: result.error_message
+      });
+    }
 
   } catch (e) {
     showTaskError('UNKNOWN', 'TASK_START_FAILED', '启动任务失败：' + e);
@@ -2494,6 +2500,31 @@ window.onTaskEvent = function(event) {
       });
 
       // 刷新历史记录显示（延迟 1 秒让用户看到任务完成提示）
+      setTimeout(() => {
+        renderAddDataHistoryOnly();
+      }, 1000);
+    } else if (result.status === 'needs_review') {
+      const reviewCount = Array.isArray(result.review_ids) ? result.review_ids.length : 0;
+      log.innerHTML += '<br><strong style="color:var(--orange)">⚠ 任务完成，待复核</strong>';
+      el('task-result').style.display = '';
+      el('result-content').innerHTML = `
+        <div style="padding:12px;background:var(--warning-bg);border-radius:var(--radius-sm);margin-bottom:12px">
+          <strong>⚠️ 需要人工复核</strong>
+          <p style="margin:8px 0 0 0;font-size:13px">
+            Pipeline 已完成，${reviewCount} 条记录等待复核；
+            <a href="#" onclick="navigate('review');return false" style="color:var(--primary)">前往复核中心</a>
+          </p>
+        </div>`;
+
+      addToHistory({
+        success: true,
+        url: el('input-url')?.value,
+        file_path: null,
+        source_id: el('input-source-url')?.value,
+        saved_count: result.candidates_promoted || 0,
+        name: result.name || (el('input-url')?.value?.split('/').pop())
+      });
+
       setTimeout(() => {
         renderAddDataHistoryOnly();
       }, 1000);

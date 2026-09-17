@@ -66,6 +66,16 @@ def test_legacy_batch_events_restore_global_handler_and_accept_review_completion
     assert "result?.status === 'success' || result?.status === 'needs_review'" in source
 
 
+def test_async_task_history_waits_for_terminal_event_and_renders_review_gate():
+    source = (ROOT / "hydro_platform" / "app" / "web" / "app.js").read_text(encoding="utf-8")
+
+    # start_task 只代表后台线程已启动，不能先写一条“失败”历史；终态事件才负责落历史。
+    assert source.count("if (result.status !== 'started')") >= 2
+    assert "任务完成，待复核" in source
+    assert "Array.isArray(result.review_ids)" in source
+    assert "navigate('review');return false" in source
+
+
 def test_guide_route_and_first_use_onboarding_are_available():
     source = (ROOT / "hydro_platform" / "app" / "web" / "app.js").read_text(encoding="utf-8")
 
