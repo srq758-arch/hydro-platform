@@ -185,9 +185,17 @@ class HydroPlatformApp:
     def list_tasks(self, status=None, limit=50, offset=0):
         return self._get_api().list_tasks(status, limit, offset)
 
-    def create_task(self, entity_id: str, target_period: str, task_type: str = "generation_annual"):
-        """创建一个待处理的采集任务。"""
-        return self._get_api().create_task(entity_id, target_period, task_type)
+    def create_task(
+        self,
+        entity_id: str,
+        target_period: str,
+        task_type: str = "generation_annual",
+        period_type: str = "calendar_year",
+    ):
+        """创建一个待处理的采集任务，并保留统计周期口径。"""
+        return self._get_api().create_task(
+            entity_id, target_period, task_type, period_type=period_type
+        )
 
     def create_intelligent_task(self, prompt: str, auto_execute: bool = False):
         """由自然语言创建 DeepSeek 联网来源规划任务。"""
