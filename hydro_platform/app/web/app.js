@@ -2204,7 +2204,7 @@ async function startDownloadTask() {
       el('result-content').innerHTML = `
         <div style="padding:12px;background:var(--warning-bg);border-radius:var(--radius-sm);margin-bottom:12px">
           <strong>⚠️ 需要人工复核</strong>
-          <p style="margin:8px 0 0 0;font-size:13px">数据已抽取完成，请前往 <a href="#" onclick="loadPage('review');return false" style="color:var(--primary)">复核中心</a> 进行审核</p>
+          <p style="margin:8px 0 0 0;font-size:13px">数据已抽取完成，请前往 <a href="#" onclick="navigate('review');return false" style="color:var(--primary)">复核中心</a> 进行审核</p>
         </div>
         ${formatExtractedData(result.extracted_data || [])}
       `;
@@ -2295,7 +2295,7 @@ async function startSingleFileTask() {
       el('result-content').innerHTML = `
         <div style="padding:12px;background:var(--warning-bg);border-radius:var(--radius-sm);margin-bottom:12px">
           <strong>⚠️ 需要人工复核</strong>
-          <p style="margin:8px 0 0 0;font-size:13px">数据已抽取完成，请前往 <a href="#" onclick="loadPage('review');return false" style="color:var(--primary)">复核中心</a> 进行审核</p>
+          <p style="margin:8px 0 0 0;font-size:13px">数据已抽取完成，请前往 <a href="#" onclick="navigate('review');return false" style="color:var(--primary)">复核中心</a> 进行审核</p>
         </div>
         ${formatExtractedData(result.extracted_data || [])}
       `;

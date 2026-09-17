@@ -43,6 +43,14 @@ def test_every_frontend_api_call_is_exposed_by_bridge():
     assert missing == [], f"前端调用未暴露到 Bridge: {missing}"
 
 
+def test_frontend_uses_current_router_for_post_collection_review_link():
+    app_js = (
+        Path(__file__).parents[2] / "hydro_platform" / "app" / "web" / "app.js"
+    ).read_text(encoding="utf-8")
+    assert "loadPage(" not in app_js
+    assert "navigate('review');return false" in app_js
+
+
 def test_bridge_missing_gui_window_returns_structured_error():
     result = HydroPlatformApp().open_review_window("review-1")
     assert result["status"] == "failed"
