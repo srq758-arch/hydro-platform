@@ -353,7 +353,7 @@ class HydroPlatformApp:
                 "target_period": str (必需，P0-2 新增),
                 "url": str (如果 type=download_url),
                 "file_path": str (如果 type=upload_file),
-                "source_id": str (来源标题),
+                "source_title": str (来源标题；兼容 source_id),
                 "metadata": dict,
                 "data_mode": str
             }
@@ -405,7 +405,12 @@ class HydroPlatformApp:
             """后台执行的任务逻辑（调用可信 Pipeline）。"""
             try:
                 task_type = task_config["type"]
-                source_title = task_config.get("source_id", "桌面应用上传")
+                # 新前端使用 source_title；保留 source_id 作为旧桌面调用的兼容别名。
+                source_title = (
+                    task_config.get("source_title")
+                    or task_config.get("source_id")
+                    or "桌面应用上传"
+                )
                 metadata = task_config.get("metadata", {})
 
                 # 报告开始

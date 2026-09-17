@@ -3,6 +3,7 @@
 import inspect
 
 from hydro_platform.app.api import Api
+import hydro_platform.app.gui.main_window as main_window
 from hydro_platform.app.gui.main_window import HydroPlatformApp
 from hydro_platform.common.enums import ContentKind, EntityType, TaskStatus, TaskType
 from hydro_platform.models.task import Task
@@ -30,6 +31,56 @@ def test_desktop_start_task_rejects_legacy_context_free_request():
         "error_code": "MISSING_BUSINESS_CONTEXT",
         "error_message": "采集任务必须指定目标电站和目标年份；旧桌面流程已停用。",
     }
+
+
+def test_desktop_start_task_forwards_new_source_title(monkeypatch):
+    captured = {}
+
+    class FakeApi:
+        def run_collection_task(self, **kwargs):
+            captured.update(kwargs)
+            return {
+                "status": "failed",
+                "task_id": "task-test",
+                "final_status": "failed",
+                "documents_archived": 0,
+                "candidates_extracted": 0,
+                "candidates_promoted": 0,
+                "error": "test failure",
+            }
+
+    class FakeWorker:
+        def __init__(self, task_id, callback):
+            self.task_id = task_id
+            self.callback = callback
+
+        def report_state_change(self, *args, **kwargs):
+            pass
+
+        def report_progress(self, *args, **kwargs):
+            pass
+
+        def is_cancelled(self):
+            return False
+
+        def start(self, callback):
+            callback()
+
+    app = HydroPlatformApp()
+    monkeypatch.setattr(main_window, "SimpleWorker", FakeWorker)
+    monkeypatch.setattr(app, "_get_api", lambda data_mode="production": FakeApi())
+
+    result = app.start_task({
+        "type": "download_url",
+        "entity_id": "station-test",
+        "target_period": "2024",
+        "url": "https://example.test/report",
+        "source_title": "官方 2024 年报",
+        "data_mode": "test",
+    })
+
+    assert result["status"] == "started"
+    assert captured["source_title"] == "官方 2024 年报"
 
 
 def test_explicit_source_can_reopen_cancelled_task(db):
