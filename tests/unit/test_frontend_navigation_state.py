@@ -55,6 +55,17 @@ def test_legacy_batch_file_path_keeps_business_context_and_fails_fast():
     assert "startResult?.error_message || '任务启动失败'" in source
 
 
+def test_legacy_batch_events_restore_global_handler_and_accept_review_completion():
+    source = (ROOT / "hydro_platform" / "app" / "web" / "app.js").read_text(encoding="utf-8")
+
+    # 批量入口只能临时接管事件；否则下一次页面任务会继续落入已结束的闭包。
+    assert "const previousHandler = window.onTaskEvent;" in source
+    assert "window.onTaskEvent = previousHandler;" in source
+    assert "if (expectedTaskId && event.task_id && event.task_id !== expectedTaskId)" in source
+    # needs_review 是有效的 Pipeline 完成态，不能在批量流程中被误判为失败。
+    assert "result?.status === 'success' || result?.status === 'needs_review'" in source
+
+
 def test_guide_route_and_first_use_onboarding_are_available():
     source = (ROOT / "hydro_platform" / "app" / "web" / "app.js").read_text(encoding="utf-8")
 

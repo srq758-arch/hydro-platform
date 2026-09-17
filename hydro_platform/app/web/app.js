@@ -1910,17 +1910,35 @@ async function processSingleFile(
     }
     let taskResult = null;
     let taskError = null;
+    let expectedTaskId = null;
+    let checkInterval = null;
+    let timeoutId = null;
+    const previousHandler = window.onTaskEvent;
 
-    window.onTaskEvent = function(event) {
+    // 旧批量入口需要等待自己的任务完成，但不能永久接管全局事件处理器。
+    // 任务结束后恢复页面主处理器，避免后续 URL/文件任务只进入旧闭包。
+    const taskHandler = function(event) {
+      if (expectedTaskId && event.task_id && event.task_id !== expectedTaskId) {
+        return;
+      }
       if (event.type === 'complete') {
-        const result = event.data.result;
-        if (result.status === 'success') {
+        const result = event.data?.result;
+        if (result?.status === 'success' || result?.status === 'needs_review') {
           taskResult = result;
         } else {
-          taskError = result.error_message || '未知错误';
+          taskError = result?.error_message || result?.error || '未知错误';
         }
       } else if (event.type === 'error') {
-        taskError = event.message;
+        taskError = event.data?.error_message || event.data?.error || event.message || '未知错误';
+      }
+    };
+    window.onTaskEvent = taskHandler;
+
+    const cleanup = () => {
+      if (checkInterval) clearInterval(checkInterval);
+      if (timeoutId) clearTimeout(timeoutId);
+      if (window.onTaskEvent === taskHandler) {
+        window.onTaskEvent = previousHandler;
       }
     };
 
@@ -1935,30 +1953,34 @@ async function processSingleFile(
       data_mode: dataMode
     }).then(startResult => {
       if (!startResult || startResult.status === 'failed') {
+        cleanup();
         reject(new Error(startResult?.error_message || '任务启动失败'));
         return;
       }
+      expectedTaskId = startResult.task_id || null;
       // 等待任务完成
-      const checkInterval = setInterval(() => {
+      checkInterval = setInterval(() => {
         if (taskResult) {
-          clearInterval(checkInterval);
-          clearTimeout(timeoutId);
+          cleanup();
           resolve(taskResult);
         } else if (taskError) {
-          clearInterval(checkInterval);
-          clearTimeout(timeoutId);
+          cleanup();
           reject(taskError);
         }
       }, 100);
 
       // 30 秒超时
-      const timeoutId = setTimeout(() => {
+      timeoutId = setTimeout(() => {
+        cleanup();
         clearInterval(checkInterval);
         if (!taskResult && !taskError) {
           reject('处理超时');
         }
       }, 30000);
-    }).catch(reject);
+    }).catch(error => {
+      cleanup();
+      reject(error);
+    });
   });
 }
 
