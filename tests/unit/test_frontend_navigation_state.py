@@ -45,6 +45,16 @@ def test_review_actions_do_not_treat_structured_api_failures_as_success():
     assert "result?.message || '复核操作失败'" in source
 
 
+def test_legacy_batch_file_path_keeps_business_context_and_fails_fast():
+    source = (ROOT / "hydro_platform" / "app" / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "const entityId = el('input-station-id')?.value.trim();" in source
+    assert "const targetPeriod = el('input-target-year')?.value.trim();" in source
+    assert "批量处理必须指定目标电站和目标年份" in source
+    assert "target_period: targetPeriod" in source
+    assert "startResult?.error_message || '任务启动失败'" in source
+
+
 def test_guide_route_and_first_use_onboarding_are_available():
     source = (ROOT / "hydro_platform" / "app" / "web" / "app.js").read_text(encoding="utf-8")
 

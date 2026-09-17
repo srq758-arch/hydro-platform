@@ -1815,9 +1815,16 @@ function selectStation(entityId, name) {
 async function startBatchUpload() {
   const filesText = el('input-batch-files').value.trim();
   const source = el('input-source-batch').value.trim();
+  const entityId = el('input-station-id')?.value.trim();
+  const targetPeriod = el('input-target-year')?.value.trim();
+  const periodType = el('input-period-type')?.value || 'calendar_year';
 
+  if (!entityId || !targetPeriod) {
+    alert('请先选择目标电站和年份');
+    return;
+  }
   if (!filesText || !source) {
-    alert('请填写文件路径和来源 ID');
+    alert('请填写文件路径和来源标题');
     return;
   }
 
@@ -1850,7 +1857,9 @@ async function startBatchUpload() {
     logBatch(`[${i + 1}/${batchUploadState.files.length}] 处理: ${file}`);
 
     try {
-      const result = await processSingleFile(file, source, currentDataMode());
+      const result = await processSingleFile(
+        file, source, currentDataMode(), entityId, targetPeriod, periodType,
+      );
       batchUploadState.results.push({ file, success: true, result });
       logBatch(`  ✓ 成功：保存 ${result.save_result?.saved || 0} 条记录`);
 
@@ -1890,8 +1899,15 @@ async function startBatchUpload() {
   el('cancel-batch-btn').style.display = 'none';
 }
 
-async function processSingleFile(filePath, sourceId, dataMode = 'production') {
+async function processSingleFile(
+  filePath, sourceTitle, dataMode = 'production',
+  entityId, targetPeriod, periodType = 'calendar_year',
+) {
   return new Promise((resolve, reject) => {
+    if (!entityId || !targetPeriod) {
+      reject(new Error('批量处理必须指定目标电站和目标年份'));
+      return;
+    }
     let taskResult = null;
     let taskError = null;
 
@@ -1911,23 +1927,32 @@ async function processSingleFile(filePath, sourceId, dataMode = 'production') {
     api().start_task({
       type: 'upload_file',
       file_path: filePath,
-      source_id: sourceId,
+      entity_id: entityId,
+      target_period: targetPeriod,
+      period_type: periodType,
+      source_title: sourceTitle,
       metadata: {},
       data_mode: dataMode
-    }).then(() => {
+    }).then(startResult => {
+      if (!startResult || startResult.status === 'failed') {
+        reject(new Error(startResult?.error_message || '任务启动失败'));
+        return;
+      }
       // 等待任务完成
       const checkInterval = setInterval(() => {
         if (taskResult) {
           clearInterval(checkInterval);
+          clearTimeout(timeoutId);
           resolve(taskResult);
         } else if (taskError) {
           clearInterval(checkInterval);
+          clearTimeout(timeoutId);
           reject(taskError);
         }
       }, 100);
 
       // 30 秒超时
-      setTimeout(() => {
+      const timeoutId = setTimeout(() => {
         clearInterval(checkInterval);
         if (!taskResult && !taskError) {
           reject('处理超时');
