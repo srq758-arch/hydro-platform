@@ -93,6 +93,10 @@ class HydroPlatformApp:
     def get_station_generation(self, entity_id):
         return self._get_api().get_station_generation(entity_id)
 
+    def get_all_stations(self):
+        """新增数据页电站选择器使用的全量列表。"""
+        return self._get_api().get_all_stations()
+
     def discover_trusted_sources(self, entity_id, target_period, limit=10, period_type="calendar_year"):
         """融合真实搜索、DeepSeek 搜索与 GEM 外链；不启动采集。"""
         return self._get_api().discover_trusted_sources(entity_id, target_period, limit, period_type)
@@ -246,6 +250,10 @@ class HydroPlatformApp:
     def rebuild_index(self):
         """重建数据库索引。"""
         return self._get_api().rebuild_index()
+
+    def import_csv_batch(self, csv_content: str, source_title: str = "CSV批量导入"):
+        """把前端 CSV 导入请求转发到统一 API。"""
+        return self._get_api().import_csv_batch(csv_content, source_title)
 
     # ========== LLM 配置管理 API ==========
     def get_llm_config(self):

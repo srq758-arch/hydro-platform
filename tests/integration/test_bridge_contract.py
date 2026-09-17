@@ -20,6 +20,16 @@ def _frontend_calls() -> set[str]:
     return set(re.findall(r"pywebview\.api\.([A-Za-z_]\w*)", text))
 
 
+def _frontend_api_calls() -> set[str]:
+    root = Path(__file__).parents[2] / "hydro_platform" / "app"
+    text = "\n".join(
+        p.read_text(encoding="utf-8", errors="ignore")
+        for p in root.rglob("*")
+        if p.is_file() and p.suffix.lower() in {".html", ".js"}
+    )
+    return set(re.findall(r"api\(\)\.([A-Za-z_]\w*)", text))
+
+
 def _bridge_methods() -> set[str]:
     return {
         name
@@ -29,7 +39,7 @@ def _bridge_methods() -> set[str]:
 
 
 def test_every_frontend_api_call_is_exposed_by_bridge():
-    missing = sorted(_frontend_calls() - _bridge_methods())
+    missing = sorted((_frontend_calls() | _frontend_api_calls()) - _bridge_methods())
     assert missing == [], f"前端调用未暴露到 Bridge: {missing}"
 
 
