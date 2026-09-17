@@ -76,9 +76,10 @@ def test_start_task_missing_business_semantics():
 
     try:
         result = api.start_task(task_config)
-        # 应该返回错误或回退到旧流程
-        # 根据智能路由逻辑，没有 entity_id 和 target_period 会使用旧流程
-        print(f"Task result without business semantics: {result.get('status')}")
+        # 统一入口必须拒绝缺少业务上下文的旧式调用，不再回退到历史直写流程。
+        assert result.get("status") == "failed"
+        assert result.get("error_code") == "MISSING_BUSINESS_CONTEXT"
+        print(f"Task rejected without business semantics: {result.get('error_code')}")
     except Exception as e:
         print(f"Task without business semantics raised: {e}")
 
@@ -99,4 +100,3 @@ if __name__ == "__main__":
     print("PASSED\n")
 
     print("=== All Phase 3 Frontend Tests Passed ===")
-

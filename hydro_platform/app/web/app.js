@@ -761,8 +761,7 @@ async function discoverTrustedSources(entityId, presetYear = null) {
 
   showModal('正在智能发现可信来源', '<div class="spinner">正在融合 DeepSeek 联网搜索、程序搜索与 GEM 外链…</div>', { width: '760px' });
   try {
-    // 旧桌面缓存曾调用 api().discover_trusted_sources(entityId, year, 10)，
-    // 第四个参数新增 periodType，省略时仍由 API 默认 calendar_year。
+    // 兼容旧调用方的前三个参数，并显式传递期间类型，避免财政年度被当作自然年。
     const result = await api().discover_trusted_sources(entityId, year, 10, periodType);
     if (!result.success) throw new Error(result.error || '来源发现失败');
     const items = result.items || [];

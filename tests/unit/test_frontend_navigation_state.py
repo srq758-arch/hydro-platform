@@ -49,7 +49,7 @@ def test_station_details_use_unified_trusted_source_discovery_not_gem_only_looku
     source = (ROOT / "hydro_platform" / "app" / "web" / "app.js").read_text(encoding="utf-8")
 
     assert "onclick=\"discoverTrustedSources(" in source
-    assert "api().discover_trusted_sources(entityId, year, 10)" in source
+    assert "api().discover_trusted_sources(entityId, year, 10, periodType)" in source
     assert "function discoverOfficialSources(" not in source
 
 
